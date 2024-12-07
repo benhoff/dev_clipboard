@@ -36,8 +36,9 @@ extern struct mutex clipboard_hash_locks[];
 /* File operations */
 ssize_t clipboard_read(struct file *file, char __user *user_buf, size_t count, loff_t *ppos);
 ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t count, loff_t *ppos);
+ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to);
+ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from);
 long clipboard_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
-
 void free_clipboard_buffers(void);
 
 #endif // CLIPBOARD_H

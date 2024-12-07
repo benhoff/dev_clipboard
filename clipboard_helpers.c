@@ -9,6 +9,7 @@
 #include <linux/ioctl.h>
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/uio.h>
 
 #include "clipboard.h"
 
@@ -179,6 +180,96 @@ out:
     return ret;
 }
 
+
+ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+    struct file *file = iocb->ki_filp;
+    loff_t *ppos = &iocb->ki_pos;
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
+    struct user_clipboard *ucb;
+    struct mutex *lock;
+    size_t available, to_copy;
+    ssize_t ret = 0;
+
+    lock = get_hash_lock(uid);
+    if (mutex_lock_interruptible(lock))
+        return -ERESTARTSYS;
+
+    ucb = find_user_clipboard(uid);
+    if (!ucb) {
+        // No data for this user
+        ret = 0;
+        goto out;
+    }
+
+    if (*ppos >= ucb->size) {
+        ret = 0;
+        goto out;
+    }
+
+    available = ucb->size - *ppos;
+    to_copy = min_t(size_t, available, iov_iter_count(to));
+    if (to_copy == 0) {
+        ret = 0;
+        goto out;
+    }
+
+    if (copy_to_iter(ucb->buffer + *ppos, to_copy, to) != to_copy) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    *ppos += to_copy;
+    ret = to_copy;
+
+out:
+    mutex_unlock(lock);
+    return ret;
+}
+
+ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
+{
+    struct file *file = iocb->ki_filp;
+    loff_t *ppos = &iocb->ki_pos;
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
+    struct user_clipboard *ucb;
+    struct mutex *lock;
+    size_t to_copy;
+    ssize_t ret = 0;
+
+    lock = get_hash_lock(uid);
+    if (mutex_lock_interruptible(lock))
+        return -ERESTARTSYS;
+
+    ucb = get_or_create_user_clipboard(uid);
+    if (!ucb) {
+        ret = -ENOMEM;
+        goto out;
+    }
+
+    to_copy = min_t(size_t, iov_iter_count(from), ucb->capacity - *ppos);
+    if (to_copy == 0) {
+        // No more capacity
+        ret = -ENOSPC;
+        goto out;
+    }
+
+    if (copy_from_iter(ucb->buffer + *ppos, to_copy, from) != to_copy) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    *ppos += to_copy;
+    if (*ppos > ucb->size)
+        ucb->size = *ppos;
+
+    ret = to_copy;
+
+out:
+    mutex_unlock(lock);
+    return ret;
+}
+
 /* IOCTL handler to clear the clipboard */
 long clipboard_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
@@ -243,4 +334,3 @@ void free_clipboard_buffers(void)
         mutex_unlock(lock);
     }
 }
-

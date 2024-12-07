@@ -5,13 +5,14 @@
 #include <linux/miscdevice.h>
 #include <linux/hashtable.h>
 #include <linux/mutex.h>
-
 #include "clipboard.h"
 
 static const struct file_operations clipboard_fops = {
     .owner = THIS_MODULE,
     .read = clipboard_read,
     .write = clipboard_write,
+    .read_iter = clipboard_read_iter,
+    .write_iter = clipboard_write_iter,
     .unlocked_ioctl = clipboard_ioctl,
 };
 
