@@ -3,19 +3,19 @@
 Dev Clipboard is a Linux kernel module that provides a per-user clipboard device. It allows each user to have their own isolated clipboard buffer, ensuring that one user's clipboard data is inaccessible to others. The module leverages a hash table with per-bucket locking to efficiently handle concurrent access from multiple users.
 Features
 
-    Per-User Isolation: Each user has a separate clipboard buffer identified by their UID.
-    Efficient Data Management: Utilizes a hash table with per-bucket mutexes for fast and concurrent access.
-    Dynamic Buffer Management: Automatically resizes clipboard buffers up to a configurable maximum capacity.
-    IOCTL Interface: Provides an IOCTL command to clear the clipboard buffer from user space.
-    Robust Synchronization: Ensures thread safety with proper mutex locking mechanisms.
-    User-Space Tools: Includes example user-space tools for interacting with the clipboard device.
+- Per-User Isolation: Each user has a separate clipboard buffer identified by their UID.
+- Efficient Data Management: Utilizes a hash table with per-bucket mutexes for fast and concurrent access.
+- Dynamic Buffer Management: Automatically resizes clipboard buffers up to a configurable maximum capacity.
+- IOCTL Interface: Provides an IOCTL command to clear the clipboard buffer from user space.
+- Robust Synchronization: Ensures thread safety with proper mutex locking mechanisms.
+- User-Space Tools: Includes example user-space tools for interacting with the clipboard device.
 
 
 #### Prerequisites
 
-    Linux Kernel Headers: Ensure that the kernel headers matching your current kernel version are installed.
-    Build Essentials: make, gcc, and other development tools.
-    Root Privileges: Installing and loading kernel modules require root access.
+- Linux Kernel Headers: Ensure that the kernel headers matching your current kernel version are installed.
+- Build Essentials: make, gcc, and other development tools.
+- Root Privileges: Installing and loading kernel modules require root access.
 
 #### Installation
 1. Clone the Repository
@@ -29,7 +29,7 @@ cd dev_clipboard
 
 On Arch Linux, install the kernel headers using:
 
-sudo pacman -Syu linux-headers
+`sudo pacman -Syu linux-headers`
 
 Ensure that the installed headers match your running kernel version:
 
@@ -49,9 +49,9 @@ Copy the compiled module to the appropriate directory and update module dependen
 
 This command performs the following actions:
 
-    Creates the /lib/modules/$(uname -r)/extra/ directory if it doesn't exist.
-    Copies clipboard.ko to /lib/modules/$(uname -r)/extra/.
-    Runs depmod -a to update the module dependency database.
+- Creates the /lib/modules/$(uname -r)/extra/ directory if it doesn't exist.
+- Copies clipboard.ko to /lib/modules/$(uname -r)/extra/.
+- Runs depmod -a to update the module dependency database.
 
 5. Load the Module
 
@@ -76,14 +76,14 @@ Reading from the Clipboard
 
 To read data from your clipboard:
 
-cat /dev/clipboard
+`cat /dev/clipboard`
 
 This command reads the current contents of your clipboard buffer.
 Writing to the Clipboard
 
 To write data to your clipboard:
 
-echo "Your clipboard text" > /dev/clipboard
+`echo "Your clipboard text" > /dev/clipboard`
 
 This command writes the specified text to your clipboard buffer.
 Clearing the Clipboard
@@ -94,21 +94,21 @@ To clear your clipboard buffer, use the provided IOCTL command.
 
 To unload and remove the clipboard kernel module:
 
-    Unload the Module
+Unload the Module
 
-sudo rmmod clipboard
+`sudo rmmod clipboard`
 
 #### Uninstall the Module
 
-sudo make uninstall
+`sudo make uninstall`
 
 This command removes clipboard.ko from /lib/modules/$(uname -r)/extra/ and updates module dependencies.
 
 Verify Removal
 
-    lsmod | grep clipboard
+`lsmod | grep clipboard`
 
-    The above command should return no results, indicating that the module is unloaded.
+The above command should return no results, indicating that the module is unloaded.
 
 
  Permission Denied When Accessing /dev/clipboard
@@ -125,8 +125,8 @@ Note: Adjusting permissions to 666 allows all users to read and write to the dev
 
 Symptoms:
 
-    Write operations fail with -ENOMEM.
-    Clipboard cannot be resized further.
+Write operations fail with -ENOMEM.
+Clipboard cannot be resized further.
 
 Solution:
 
