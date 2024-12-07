@@ -19,6 +19,7 @@ static struct miscdevice clipboard_dev = {
     .minor = MISC_DYNAMIC_MINOR,
     .name = "clipboard",
     .fops = &clipboard_fops,
+	.mode   = 0666,
 };
 
 static int __init clipboard_init(void)
