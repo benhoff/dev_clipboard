@@ -174,6 +174,8 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
         goto out;
     }
 
+	*ppos = 0;
+
     /* Check if we need to expand the buffer */
     if (*ppos + count > ucb->capacity) {
         size_t new_capacity = ucb->capacity;
