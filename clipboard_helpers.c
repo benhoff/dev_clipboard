@@ -49,16 +49,30 @@ int clipboard_fasync_handler(int fd, struct file *file, int on)
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct clipboard_fasync_entry *entry;
     int hash;
+    int ret = 0;
 
     /* Find the fasync entry for this user */
     hash = hash_min(uid, CLIPBOARD_HASH_BITS);
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
-            return fasync_helper(-1, file, on, &entry->fasync);
+            ret = fasync_helper(-1, file, on, &entry->fasync);
         }
     }
 
-    return 0;
+    /* If subscribing and no entry exists, create one */
+    if (on && entry == NULL) {
+        entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+        if (!entry)
+            return -ENOMEM;
+
+        entry->uid = uid;
+        entry->fasync = NULL;
+
+        hash_add(clipboard_fasync_hash, &entry->hash_node, uid);
+        ret = fasync_helper(-1, file, on, &entry->fasync);
+    }
+
+    return ret;
 }
 
 static struct user_clipboard *get_or_create_user_clipboard(uid_t uid)
@@ -412,8 +426,15 @@ void free_clipboard_fasync_entries(void)
         mutex_lock(lock);
 
         hash_for_each_safe(clipboard_fasync_hash, bkt, tmp, entry, hash_node) {
-            /* Unregister the fasync_struct */
-            fasync_helper(0, NULL, 0, &entry->fasync);
+            /* Notify the subscriber and remove the fasync_struct */
+            if (entry->fasync) {
+                /* 
+                 * Kill the fasync_struct by sending POLL_HUP.
+                 * This effectively notifies the subscriber that the
+                 * module is being unloaded and cleans up the fasync_struct.
+                 */
+                kill_fasync(&entry->fasync, POLL_HUP, POLL_HUP);
+            }
 
             /* Remove from hash table and free */
             hash_del(&entry->hash_node);
