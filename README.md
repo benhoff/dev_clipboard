@@ -7,8 +7,6 @@ Features
 - Efficient Data Management: Utilizes a hash table with per-bucket mutexes for fast and concurrent access.
 - Dynamic Buffer Management: Automatically resizes clipboard buffers up to a configurable maximum capacity.
 - IOCTL Interface: Provides an IOCTL command to clear the clipboard buffer from user space.
-- Robust Synchronization: Ensures thread safety with proper mutex locking mechanisms.
-- User-Space Tools: Includes example user-space tools for interacting with the clipboard device.
 
 
 #### Prerequisites
@@ -45,7 +43,7 @@ Use the provided Makefile to compile the kernel module.
 
 Copy the compiled module to the appropriate directory and update module dependencies.
 
-`sudo make install`
+`make install`
 
 This command performs the following actions:
 
