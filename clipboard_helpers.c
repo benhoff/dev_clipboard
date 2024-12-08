@@ -148,6 +148,36 @@ out:
     return ret;
 }
 
+int clipboard_open(struct inode *inode, struct file *file)
+{
+	uid_t uid = from_kuid(current_user_ns(), current_fsuid());
+    struct user_clipboard *ucb;
+    struct mutex *lock;
+
+    lock = get_hash_lock(uid);
+
+    if (mutex_lock_interruptible(lock))
+        return -ERESTARTSYS;
+
+    ucb = get_or_create_user_clipboard(uid);
+    if (!ucb) {
+        mutex_unlock(lock);
+        return -ENOMEM;
+    }
+
+    /* Handle O_TRUNC: if the file is opened with O_TRUNC, clear the buffer */
+    if (file->f_flags & O_TRUNC) {
+        memset(ucb->buffer, 0, ucb->capacity);
+        ucb->size = 0;
+
+        pr_info("Clipboard buffer truncated for UID %u\n", uid);
+    }
+
+    mutex_unlock(lock);
+    return 0;
+}
+
+
 ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t count, loff_t *ppos)
 {
     ssize_t ret = 0;
@@ -174,7 +204,10 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
         goto out;
     }
 
-	*ppos = 0;
+	/* Handle O_APPEND: set ppos to the end if O_APPEND is set */
+    if (file->f_flags & O_APPEND) {
+        *ppos = ucb->size;
+    }
 
     /* Check if we need to expand the buffer */
     if (*ppos + count > ucb->capacity) {
@@ -296,6 +329,11 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     if (!ucb) {
         ret = -ENOMEM;
         goto out;
+    }
+
+    /* Handle O_APPEND: set ppos to the end if O_APPEND is set */
+    if (file->f_flags & O_APPEND) {
+        *ppos = ucb->size;
     }
 
     to_copy = min_t(size_t, iov_iter_count(from), ucb->capacity - *ppos);

@@ -54,6 +54,7 @@ long clipboard_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 void free_clipboard_buffers(void);
 void free_clipboard_fasync_entries(void);
 int clipboard_fasync_handler(int fd, struct file *file, int on);
+int clipboard_open(struct inode *inode, struct file *file);
 
 #endif // CLIPBOARD_H
 
