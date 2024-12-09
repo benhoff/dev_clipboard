@@ -1,7 +1,6 @@
 ## Dev Clipboard Kernel Module
 
-Dev Clipboard is a Linux kernel module that provides a per-user clipboard device. It allows each user to have their own isolated clipboard buffer, ensuring that one user's clipboard data is inaccessible to others. The module leverages a hash table with per-bucket locking to efficiently handle concurrent access from multiple users.
-Features
+Dev Clipboard is a Linux kernel module that provides a per-user clipboard device. It allows each user to have their own isolated clipboard buffer, ensuring that one user's clipboard data is inaccessible to others.
 
 - Per-User Isolation: Each user has a separate clipboard buffer identified by their UID.
 - Efficient Data Management: Utilizes a hash table with per-bucket mutexes for fast and concurrent access.
@@ -14,44 +13,58 @@ Features
 - Linux Kernel Headers: Ensure that the kernel headers matching your current kernel version are installed.
 - Build Essentials: make, gcc, and other development tools.
 - Root Privileges: Installing and loading kernel modules require root access.
+- (optional) DKMS
+  
+```bash
+# Arch Linux
+sudo pacman -Syu linux-headers
+
+# Fedora
+sudo dnf install kernel-headers kernel-devel
+
+# Debian/Ubuntu
+sudo apt-get update
+sudo apt-get install linux-headers-$(uname -r)
+
+# Optionally, install DKMS
+# Arch
+sudo pacman -Syu dkms
+
+# Fedora
+sudo dnf install dkms
+
+# Debian/Ubuntu
+sudo apt-get install dkms
+
+```
 
 #### Installation
 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/dev_clipboard.git
+git clone https://github.com/benhoff/dev_clipboard.git
 cd dev_clipboard
 ```
 
-2. Ensure Kernel Headers are Installed
+2. Build the Module using make or DKMS
 
-On Arch Linux, install the kernel headers using:
+Either use the provided Makefile to compile the kernel module.
 
-`sudo pacman -Syu linux-headers`
+```
+cd src && make && make install
+```
 
-Ensure that the installed headers match your running kernel version:
+-Or- use DKMS
+```
+# Add the module to DKMS
+sudo dkms add -m clipboard -v 3.0
 
-`uname -r`
+# Build the module using DKMS
+sudo dkms build -m clipboard -v 3.0
 
-3. Build the Module
-
-Use the provided Makefile to compile the kernel module.
-
-`make`
-
-4. Install the Module
-
-Copy the compiled module to the appropriate directory and update module dependencies.
-
-`make install`
-
-This command performs the following actions:
-
-- Creates the /lib/modules/$(uname -r)/extra/ directory if it doesn't exist.
-- Copies clipboard.ko to /lib/modules/$(uname -r)/extra/.
-- Runs depmod -a to update the module dependency database.
-
-5. Load the Module
+# Install the module using DKMS
+sudo dkms install -m clipboard -v 3.0
+```
 
 Load the clipboard module into the kernel.
 
@@ -102,22 +115,6 @@ Unload the Module
 
 This command removes clipboard.ko from /lib/modules/$(uname -r)/extra/ and updates module dependencies.
 
-Verify Removal
-
-`lsmod | grep clipboard`
-
-The above command should return no results, indicating that the module is unloaded.
-
-
- Permission Denied When Accessing /dev/clipboard
-
-Solution:
-
-Ensure that your user has the necessary permissions to read and write to /dev/clipboard. You can change the device file permissions or add your user to an appropriate group.
-
-sudo chmod 666 /dev/clipboard
-
-Note: Adjusting permissions to 666 allows all users to read and write to the device. For better security, consider creating a dedicated group and assigning ownership accordingly.
 
 5. Maximum Capacity Reached
 
