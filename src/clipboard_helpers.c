@@ -13,6 +13,7 @@
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/fs.h>
+#include <linux/vmalloc.h>
 
 #include "clipboard.h"
 
@@ -91,11 +92,14 @@ static struct user_clipboard *get_or_create_user_clipboard(uid_t uid)
 
     ucb->uid = uid;
     ucb->capacity = INITIAL_CLIPBOARD_CAPACITY;
-    ucb->buffer = kzalloc(ucb->capacity, GFP_KERNEL);
+
+    // Allocate buffer with vmalloc
+    ucb->buffer = vmalloc(ucb->capacity);
     if (!ucb->buffer) {
         kfree(ucb);
         return NULL;
     }
+    memset(ucb->buffer, 0, ucb->capacity);
     ucb->size = 0;
 
     hash_add(clipboard_hash, &ucb->hash_node, uid);
@@ -142,7 +146,6 @@ ssize_t clipboard_read(struct file *file, char __user *user_buf, size_t count, l
     }
 
     *ppos += count;
-    ucb->read_count++;
     ret = count;
 
 out:
@@ -204,7 +207,7 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
         goto out;
     }
 
-	/* Handle O_APPEND: set ppos to the end if O_APPEND is set */
+    /* Handle O_APPEND: set ppos to the end if O_APPEND is set */
     if (file->f_flags & O_APPEND) {
         *ppos = ucb->size;
     }
@@ -225,13 +228,24 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
         }
 
         if (new_capacity > ucb->capacity) {
-            char *new_buf = krealloc(ucb->buffer, new_capacity, GFP_KERNEL);
-            if (!new_buf) {
+            char *new_buf_v = vmalloc(new_capacity);
+            if (!new_buf_v) {
                 pr_err("Failed to expand clipboard buffer.\n");
                 ret = -ENOMEM;
                 goto out;
             }
-            ucb->buffer = new_buf;
+
+            /* Copy existing data to the new buffer */
+            memcpy(new_buf_v, ucb->buffer, ucb->size);
+
+            /* Zero the newly allocated memory beyond the current size */
+            memset(new_buf_v + ucb->size, 0, new_capacity - ucb->size);
+
+            /* Free the old buffer */
+            vfree(ucb->buffer);
+
+            /* Update the buffer pointer and capacity */
+            ucb->buffer = new_buf_v;
             ucb->capacity = new_capacity;
         }
     }
@@ -247,7 +261,6 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
     if (*ppos > ucb->size)
         ucb->size = *ppos;
 
-    ucb->write_count++;
     ret = count;
 
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
@@ -262,7 +275,6 @@ out:
     mutex_unlock(lock);
     return ret;
 }
-
 
 ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
@@ -504,7 +516,7 @@ void free_clipboard_buffers(void)
             hash_del(&ucb->hash_node);
 
             /* Free resources */
-            kfree(ucb->buffer);
+            vfree(ucb->buffer); // Use vfree instead of kfree
             kfree(ucb);
         }
 
@@ -512,3 +524,4 @@ void free_clipboard_buffers(void)
         mutex_unlock(lock);
     }
 }
+

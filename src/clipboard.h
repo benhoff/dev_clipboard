@@ -10,7 +10,7 @@
 #define CLIPBOARD_HASH_BITS 10  // 2^10 = 1024 buckets
 
 /* Set a reasonable max capacity to prevent memory abuse */
-#define MAX_CLIPBOARD_CAPACITY (1024 * 1024) // 1 MB for example
+#define MAX_CLIPBOARD_CAPACITY (10 * 1024 * 1024) // 10 MB for example
 
 /* IOCTL commands */
 #define CLIPBOARD_MAGIC 'C'
@@ -23,10 +23,6 @@ struct user_clipboard {
     char *buffer;
     size_t size;
     size_t capacity;
-
-    /* Optional statistics */
-    unsigned long read_count;
-    unsigned long write_count;
 
     struct hlist_node hash_node;
 };
