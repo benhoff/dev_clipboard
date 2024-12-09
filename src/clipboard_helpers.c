@@ -182,6 +182,44 @@ int clipboard_open(struct inode *inode, struct file *file)
     return 0;
 }
 
+static int expand_clipboard_buffer(struct user_clipboard *ucb, size_t required_size)
+{
+    size_t new_capacity = ucb->capacity;
+
+    /* Determine the new capacity by doubling until it fits or reaches the max limit */
+    while (new_capacity < required_size) {
+        if (new_capacity >= MAX_CLIPBOARD_CAPACITY) {
+            pr_err("Reached max clipboard capacity of %zu bytes.\n", (size_t)MAX_CLIPBOARD_CAPACITY);
+            return -ENOMEM;
+        }
+        new_capacity *= 2;
+        if (new_capacity > MAX_CLIPBOARD_CAPACITY)
+            new_capacity = MAX_CLIPBOARD_CAPACITY;
+    }
+
+    /* Allocate new buffer with the increased capacity */
+    char *new_buf_v = vmalloc(new_capacity);
+    if (!new_buf_v) {
+        pr_err("Failed to expand clipboard buffer to %zu bytes.\n", (size_t)new_capacity);
+        return -ENOMEM;
+    }
+
+    /* Copy existing data to the new buffer */
+    memcpy(new_buf_v, ucb->buffer, ucb->size);
+
+    /* Zero the newly allocated memory beyond the current size */
+    memset(new_buf_v + ucb->size, 0, new_capacity - ucb->size);
+
+    /* Free the old buffer */
+    vfree(ucb->buffer);
+
+    /* Update the buffer pointer and capacity */
+    ucb->buffer = new_buf_v;
+    ucb->capacity = new_capacity;
+
+    return 0;
+}
+
 
 ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t count, loff_t *ppos)
 {
@@ -214,40 +252,11 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
 
     /* Check if we need to expand the buffer */
     if (*ppos + count > ucb->capacity) {
-        size_t new_capacity = ucb->capacity;
-        while (new_capacity < *ppos + count) {
-            if (new_capacity >= MAX_CLIPBOARD_CAPACITY) {
-                /* We cannot grow further */
-                pr_err("Reached max clipboard capacity.\n");
-                ret = -ENOMEM;
-                goto out;
-            }
-            new_capacity *= 2;
-            if (new_capacity > MAX_CLIPBOARD_CAPACITY)
-                new_capacity = MAX_CLIPBOARD_CAPACITY;
-        }
+        size_t required_size = *ppos + count;
 
-        if (new_capacity > ucb->capacity) {
-            char *new_buf_v = vmalloc(new_capacity);
-            if (!new_buf_v) {
-                pr_err("Failed to expand clipboard buffer.\n");
-                ret = -ENOMEM;
-                goto out;
-            }
-
-            /* Copy existing data to the new buffer */
-            memcpy(new_buf_v, ucb->buffer, ucb->size);
-
-            /* Zero the newly allocated memory beyond the current size */
-            memset(new_buf_v + ucb->size, 0, new_capacity - ucb->size);
-
-            /* Free the old buffer */
-            vfree(ucb->buffer);
-
-            /* Update the buffer pointer and capacity */
-            ucb->buffer = new_buf_v;
-            ucb->capacity = new_capacity;
-        }
+        ret = expand_clipboard_buffer(ucb, required_size);
+        if (ret < 0)
+            goto out;
     }
 
     /* Copy data from user space */
@@ -263,6 +272,7 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
 
     ret = count;
 
+    /* Notify any asynchronous subscribers about the data change */
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
             if (entry->fasync)
@@ -333,10 +343,12 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     ssize_t ret = 0;
     struct clipboard_fasync_entry *entry;
 
+    /* Acquire the appropriate hash lock based on UID */
     lock = get_hash_lock(uid);
     if (mutex_lock_interruptible(lock))
         return -ERESTARTSYS;
 
+    /* Retrieve or create the user clipboard */
     ucb = get_or_create_user_clipboard(uid);
     if (!ucb) {
         ret = -ENOMEM;
@@ -348,24 +360,45 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
         *ppos = ucb->size;
     }
 
+    /* Calculate the maximum possible bytes to copy without expanding */
     to_copy = min_t(size_t, iov_iter_count(from), ucb->capacity - *ppos);
+
+    /* If insufficient space, attempt to expand the buffer */
+    if (to_copy < iov_iter_count(from)) {
+        size_t required = *ppos + iov_iter_count(from);
+
+        ret = expand_clipboard_buffer(ucb, required);
+        if (ret < 0)
+            goto out;
+
+        /* Recalculate how much can be copied after expansion */
+        to_copy = min_t(size_t, iov_iter_count(from), ucb->capacity - *ppos);
+    }
+
+    /* If still no space after expansion, return ENOSPC */
     if (to_copy == 0) {
-        // No more capacity
+        pr_err("No space available in clipboard buffer after expansion.\n");
         ret = -ENOSPC;
         goto out;
     }
 
+    /* Perform the copy from user space */
     if (copy_from_iter(ucb->buffer + *ppos, to_copy, from) != to_copy) {
+        pr_err("Failed to copy data from user space.\n");
         ret = -EFAULT;
         goto out;
     }
 
+    /* Update the file position */
     *ppos += to_copy;
+
+    /* Update the clipboard size if necessary */
     if (*ppos > ucb->size)
         ucb->size = *ppos;
 
     ret = to_copy;
 
+    /* Notify any asynchronous subscribers about the data change */
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
             if (entry->fasync)
@@ -375,6 +408,7 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     }
 
 out:
+    /* Release the mutex lock */
     mutex_unlock(lock);
     return ret;
 }
