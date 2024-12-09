@@ -47,12 +47,13 @@ static struct user_clipboard *find_user_clipboard(uid_t uid)
 int clipboard_fasync_handler(int fd, struct file *file, int on)
 {
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
-    struct clipboard_fasync_entry *entry;
+    struct clipboard_fasync_entry *entry = NULL;
     int hash;
     int ret = 0;
 
     /* Find the fasync entry for this user */
     hash = hash_min(uid, CLIPBOARD_HASH_BITS);
+    mutex_lock(&clipboard_fasync_locks[hash]);
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
             ret = fasync_helper(-1, file, on, &entry->fasync);
@@ -71,7 +72,8 @@ int clipboard_fasync_handler(int fd, struct file *file, int on)
         hash_add(clipboard_fasync_hash, &entry->hash_node, uid);
         ret = fasync_helper(-1, file, on, &entry->fasync);
     }
-
+out:
+	mutex_unlock(&clipboard_fasync_locks[hash]);
     return ret;
 }
 
