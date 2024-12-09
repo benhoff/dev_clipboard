@@ -72,7 +72,7 @@ int clipboard_fasync_handler(int fd, struct file *file, int on)
         hash_add(clipboard_fasync_hash, &entry->hash_node, uid);
         ret = fasync_helper(-1, file, on, &entry->fasync);
     }
-out:
+
 	mutex_unlock(&clipboard_fasync_locks[hash]);
     return ret;
 }
@@ -187,8 +187,6 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
     struct user_clipboard *ucb;
     struct mutex *lock;
     struct clipboard_fasync_entry *entry;
-    int hash;
-    int result;
 
     if (!user_buf)
         return -EINVAL;
@@ -268,7 +266,7 @@ out:
 
 ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
-    struct file *file = iocb->ki_filp;
+    // struct file *file = iocb->ki_filp;
     loff_t *ppos = &iocb->ki_pos;
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
