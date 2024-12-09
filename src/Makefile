@@ -30,7 +30,7 @@ clean:
 # Install target
 install: all
 	@sudo mkdir -p $(DEST_DIR)
-	@sudo cp src/$(MODULE_NAME).ko $(DEST_DIR)
+	@sudo cp $(MODULE_NAME).ko $(DEST_DIR)
 	@sudo depmod -a
 	@echo "Module $(MODULE_NAME) installed to $(DEST_DIR)"
 
