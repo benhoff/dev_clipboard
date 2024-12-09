@@ -7,7 +7,7 @@ MODULE_NAME := clipboard
 KERNEL_DIR := /lib/modules/$(shell uname -r)/build
 
 # Source files
-SRC_FILES := src/clipboard_main.c src/clipboard_helpers.c
+SRC_FILES := clipboard_main.c clipboard_helpers.c
 
 # Object files
 OBJ_FILES := $(SRC_FILES:.c=.o)
@@ -30,7 +30,7 @@ clean:
 # Install target
 install: all
 	@sudo mkdir -p $(DEST_DIR)
-	@sudo cp $(MODULE_NAME).ko $(DEST_DIR)
+	@sudo cp src/$(MODULE_NAME).ko $(DEST_DIR)
 	@sudo depmod -a
 	@echo "Module $(MODULE_NAME) installed to $(DEST_DIR)"
 
