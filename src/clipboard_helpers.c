@@ -204,7 +204,7 @@ int clipboard_open(struct inode *inode, struct file *file)
         memset(ucb->buffer, 0, ucb->capacity);
         ucb->size = 0;
 
-        pr_info("Clipboard buffer truncated for UID %u\n", uid);
+        // pr_info("Clipboard buffer truncated for UID %u\n", uid);
     }
 
     mutex_unlock(lock);
