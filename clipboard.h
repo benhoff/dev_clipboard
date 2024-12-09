@@ -5,6 +5,8 @@
 #include <linux/fs.h>
 #include <linux/hashtable.h>
 #include <linux/mutex.h>
+#include <linux/wait.h>
+#include <linux/poll.h>
 
 /* Hash table configuration */
 #define CLIPBOARD_HASH_BITS 10  // 2^10 = 1024 buckets
@@ -29,6 +31,7 @@ struct user_clipboard {
     unsigned long write_count;
 
     struct hlist_node hash_node;
+	wait_queue_head_t wait_queue;
 };
 
 /* Structure for managing per-user fasync subscriptions */
@@ -55,6 +58,7 @@ void free_clipboard_buffers(void);
 void free_clipboard_fasync_entries(void);
 int clipboard_fasync_handler(int fd, struct file *file, int on);
 int clipboard_open(struct inode *inode, struct file *file);
+unsigned int clipboard_poll(struct file *file, poll_table *wait);
 
 #endif // CLIPBOARD_H
 

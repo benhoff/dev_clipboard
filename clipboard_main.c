@@ -16,6 +16,7 @@ static const struct file_operations clipboard_fops = {
     .write_iter = clipboard_write_iter,
     .unlocked_ioctl = clipboard_ioctl,
     .fasync = clipboard_fasync_handler,
+	.poll = clipboard_poll,
 };
 
 static struct miscdevice clipboard_dev = {
