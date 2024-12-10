@@ -10,12 +10,13 @@
 static const struct file_operations clipboard_fops = {
     .owner = THIS_MODULE,
     .read = clipboard_read,
-	.open = clipboard_open,
+    .open = clipboard_open,
     .write = clipboard_write,
     .read_iter = clipboard_read_iter,
     .write_iter = clipboard_write_iter,
     .unlocked_ioctl = clipboard_ioctl,
     .fasync = clipboard_fasync_handler,
+    .llseek = clipboard_llseek,
 };
 
 static struct miscdevice clipboard_dev = {

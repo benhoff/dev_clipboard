@@ -286,6 +286,34 @@ out:
     return ret;
 }
 
+loff_t clipboard_llseek(struct file *file, loff_t offset, int whence)
+{
+    loff_t new_pos;
+    struct user_clipboard *uc = file->private_data;
+
+    if (!uc)
+        return -EFAULT;
+
+    switch (whence) {
+    case SEEK_SET: // Absolute offset
+        new_pos = offset;
+        break;
+    case SEEK_CUR: // Relative to current position
+        new_pos = file->f_pos + offset;
+        break;
+    case SEEK_END: // Relative to file size (not relevant for non-regular files)
+        return -EINVAL; // Not supported
+    default:
+        return -EINVAL; // Invalid whence
+    }
+
+    if (new_pos < 0)
+        return -EINVAL;
+
+    file->f_pos = new_pos;
+    return new_pos;
+}
+
 ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
     // struct file *file = iocb->ki_filp;

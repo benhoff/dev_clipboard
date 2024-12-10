@@ -51,6 +51,7 @@ void free_clipboard_buffers(void);
 void free_clipboard_fasync_entries(void);
 int clipboard_fasync_handler(int fd, struct file *file, int on);
 int clipboard_open(struct inode *inode, struct file *file);
+loff_t clipboard_llseek(struct file *file, loff_t offset, int whence);
 
 #endif // CLIPBOARD_H
 
