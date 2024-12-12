@@ -7,6 +7,19 @@ Dev Clipboard is a Linux kernel module that provides a per-user clipboard device
 - Dynamic Buffer Management: Automatically resizes clipboard buffers up to a configurable maximum capacity.
 - IOCTL Interface: Provides an IOCTL command to clear the clipboard buffer from user space.
 
+#### Usage
+
+A device file /dev/clipboard is created, allowing user-space applications to interact with the clipboard.
+
+To read data from your clipboard:
+
+`cat /dev/clipboard`
+
+To write data to your clipboard:
+
+`echo "Your clipboard text" > /dev/clipboard`
+
+This command writes the specified text to your clipboard buffer.
 
 #### Installation
 
@@ -84,43 +97,12 @@ Load the clipboard module into the kernel.
 `sudo modprobe clipboard`
 
 
-#### Usage
 
-Once the module is loaded, a device file /dev/clipboard is created, allowing user-space applications to interact with the clipboard.
-Reading from the Clipboard
-
-To read data from your clipboard:
-
-`cat /dev/clipboard`
-
-This command reads the current contents of your clipboard buffer.
-Writing to the Clipboard
-
-To write data to your clipboard:
-
-`echo "Your clipboard text" > /dev/clipboard`
-
-This command writes the specified text to your clipboard buffer.
 Clearing the Clipboard
 
 To clear your clipboard buffer, use the provided IOCTL command.
 
-#### Uninstallation
-
-To unload and remove the clipboard kernel module:
-
-Unload the Module
-
-`sudo rmmod clipboard`
-
-#### Uninstall the Module
-
-`sudo make uninstall`
-
-This command removes clipboard.ko from /lib/modules/$(uname -r)/extra/ and updates module dependencies.
-
-
-5. Maximum Capacity Reached
+Need more Maximum Capacity per User?
 
 Symptoms:
 
@@ -131,7 +113,7 @@ Solution:
 
 The module enforces a maximum clipboard capacity (MAX_CLIPBOARD_CAPACITY). To increase this limit, modify the clipboard.h file and recompile the module.
 
-#define MAX_CLIPBOARD_CAPACITY (2 * 1024 * 1024) // 2 MB
+#define MAX_CLIPBOARD_CAPACITY (10 * 1024 * 1024) // 10 MB
 
 After making changes, rebuild and reinstall the module.
 
