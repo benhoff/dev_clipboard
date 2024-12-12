@@ -8,8 +8,22 @@ Dev Clipboard is a Linux kernel module that provides a per-user clipboard device
 - IOCTL Interface: Provides an IOCTL command to clear the clipboard buffer from user space.
 
 
-#### Prerequisites
+#### Installation
 
+Option 1: Automated Installation via Bootstrap Script
+
+You can use the provided bootstrap script. This script automates the process of installing dependencies, setting up DKMS, downloading the project, building and installing the module, and configuring it to load on startup.
+
+```bash
+curl -sSL https://raw.githubusercontent.com/benhoff/dev_clipboard/refs/heads/master/bootstrap.sh | bash
+
+# Alternatively, using wget:
+wget -qO- https://raw.githubusercontent.com/benhoff/dev_clipboard/refs/heads/master/bootstrap.sh | bash
+```
+
+Option 2: Manual installation
+
+Pre-reqs include:
 - Linux Kernel Headers: Ensure that the kernel headers matching your current kernel version are installed.
 - Build Essentials: make, gcc, and other development tools.
 - Root Privileges: Installing and loading kernel modules require root access.
@@ -38,7 +52,6 @@ sudo apt-get install dkms
 
 ```
 
-#### Installation
 1. Clone the Repository
 
 ```bash
@@ -70,15 +83,6 @@ Load the clipboard module into the kernel.
 
 `sudo modprobe clipboard`
 
-Verify that the module is loaded:
-
-`lsmod | grep clipboard`
-
-Check kernel logs to confirm successful loading:
-
-`dmesg | tail`
-
-You should see messages indicating that the clipboard module has been initialized successfully.
 
 #### Usage
 
