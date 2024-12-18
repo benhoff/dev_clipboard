@@ -81,7 +81,7 @@ version_greater_equal() {
 
 # Check if the module is installed and determine if an update is needed
 check_and_update_module() {
-    EXISTING_VERSION=$(dkms status | grep "^${MODULE_NAME}" | awk '{print $3}' | tr -d ',')
+    EXISTING_VERSION=$(dkms status | grep "^clipboard" | cut -d'/' -f2 | cut -d',' -f1)
     
     if [ -z "$EXISTING_VERSION" ]; then
         echo "Module '${MODULE_NAME}' is not installed. Proceeding with installation."
