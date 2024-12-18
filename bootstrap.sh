@@ -32,19 +32,19 @@ install_dependencies() {
             echo "Updating package lists..."
             sudo apt update
             echo "Installing DKMS and build-essential..."
-            sudo apt install -y dkms build-essential git
+            sudo apt install -y dkms build-essential git curl
             ;;
         arch)
             echo "Updating package lists..."
             sudo pacman -Syu --noconfirm
             echo "Installing DKMS and base-devel..."
-            sudo pacman -S --noconfirm dkms base-devel git
+            sudo pacman -S --noconfirm dkms base-devel git curl
             ;;
         fedora)
             echo "Updating package lists..."
             sudo dnf check-update || true
             echo "Installing DKMS and necessary tools..."
-            sudo dnf install -y dkms @development-tools git
+            sudo dnf install -y dkms @development-tools git curl
             ;;
         *)
             error "Unsupported Linux distribution: $DISTRO"
@@ -56,11 +56,11 @@ install_dependencies() {
 download_project() {
     GITHUB_REPO="https://github.com/benhoff/dev_clipboard.git" # Replace with the actual GitHub repository URL
     MODULE_NAME="clipboard"       # Replace with the actual module name
-    MODULE_VERSION="3.0" # Replace with the module version, e.g., "1.0"
+    MODULE_VERSION="3.1"
 
     TEMP_DIR=$(mktemp -d)
     echo "Downloading the project from GitHub..."
-    
+
     if command_exists git; then
         git clone "$GITHUB_REPO" "$TEMP_DIR/$MODULE_NAME-$MODULE_VERSION"
     else
@@ -72,10 +72,37 @@ download_project() {
     echo "Project downloaded to $TEMP_DIR/$MODULE_NAME-$MODULE_VERSION"
 }
 
+# Compare two version strings
+version_greater_equal() {
+    # Returns 0 if $1 >= $2, 1 otherwise
+    # Uses sort -V for version comparison
+    [ "$(printf '%s\n%s' "$1" "$2" | sort -V | head -n1)" = "$2" ]
+}
+
+# Check if the module is installed and determine if an update is needed
+check_and_update_module() {
+    EXISTING_VERSION=$(dkms status | grep "^${MODULE_NAME}" | awk '{print $3}' | tr -d ',')
+    
+    if [ -z "$EXISTING_VERSION" ]; then
+        echo "Module '${MODULE_NAME}' is not installed. Proceeding with installation."
+        return 0
+    else
+        echo "Module '${MODULE_NAME}' is already installed with version ${EXISTING_VERSION}."
+        if version_greater_equal "$EXISTING_VERSION" "$MODULE_VERSION"; then
+            echo "A newer or equal version is already installed. No update needed."
+            exit 0
+        else
+            echo "Installed version is older than desired version. Proceeding with update."
+            # Remove the existing module version
+            sudo dkms remove -m "$MODULE_NAME" -v "$EXISTING_VERSION" --all
+        fi
+    fi
+}
+
 # Add, build, and install the module using DKMS
 setup_dkms() {
     DEST_DIR="/usr/src/${MODULE_NAME}-${MODULE_VERSION}"
-    
+
     echo "Copying project to $DEST_DIR..."
     sudo cp -r "$TEMP_DIR/$MODULE_NAME-$MODULE_VERSION" "$DEST_DIR"
 
@@ -117,6 +144,7 @@ main() {
     detect_distro
     install_dependencies
     download_project
+    check_and_update_module
     setup_dkms
     configure_startup
     cleanup
