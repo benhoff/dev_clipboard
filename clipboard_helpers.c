@@ -184,17 +184,17 @@ int clipboard_open(struct inode *inode, struct file *file)
 
 static int expand_clipboard_buffer(struct user_clipboard *ucb, size_t required_size)
 {
-    size_t new_capacity = ucb->capacity;
+    unsigned long new_capacity = ucb->capacity;
 
     /* Determine the new capacity by doubling until it fits or reaches the max limit */
     while (new_capacity < required_size) {
-        if (new_capacity >= MAX_CLIPBOARD_CAPACITY) {
-            pr_err("Reached max clipboard capacity of %zu bytes.\n", (size_t)MAX_CLIPBOARD_CAPACITY);
+        if (new_capacity >= max_clipboard_capacity) {
+            pr_err("Reached max clipboard capacity of %zu bytes.\n", (size_t)max_clipboard_capacity);
             return -ENOMEM;
         }
         new_capacity *= 2;
-        if (new_capacity > MAX_CLIPBOARD_CAPACITY)
-            new_capacity = MAX_CLIPBOARD_CAPACITY;
+        if (new_capacity > max_clipboard_capacity)
+            new_capacity = max_clipboard_capacity;
     }
 
     /* Allocate new buffer with the increased capacity */

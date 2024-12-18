@@ -7,6 +7,14 @@
 #include <linux/errno.h>
 #include "clipboard.h"
 
+/* Define the max clipboard capacity with a default value */
+unsigned long max_clipboard_capacity = 10 * 1024 * 1024; // 10 MB
+
+/* Register the parameter with read/write permissions for root only */
+module_param(max_clipboard_capacity, ulong, 0600);
+MODULE_PARM_DESC(max_clipboard_capacity, "Maximum clipboard capacity in bytes");
+
+/* Rest of your code remains unchanged */
 static const struct file_operations clipboard_fops = {
     .owner = THIS_MODULE,
     .read = clipboard_read,
@@ -23,7 +31,7 @@ static struct miscdevice clipboard_dev = {
     .minor = MISC_DYNAMIC_MINOR,
     .name = "clipboard",
     .fops = &clipboard_fops,
-	.mode   = 0666,
+    .mode   = 0666,
 };
 
 static int __init clipboard_init(void)
@@ -40,8 +48,8 @@ static int __init clipboard_init(void)
     for (i = 0; i < (1 << CLIPBOARD_HASH_BITS); i++)
         mutex_init(&clipboard_fasync_locks[i]);
 
+    /* Register the misc device */
     ret = misc_register(&clipboard_dev);
-
     if (ret) {
         pr_err("Unable to register clipboard misc device\n");
         return ret;
@@ -49,7 +57,7 @@ static int __init clipboard_init(void)
 
     pr_info("Clipboard device registered successfully with improvements\n");
     return 0;
-};
+}
 
 static void __exit clipboard_exit(void)
 {
@@ -66,5 +74,4 @@ module_exit(clipboard_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("SenpaiSilver, with improvements");
 MODULE_DESCRIPTION("Clipboard device with per-user isolation, hash table, IOCTL, max capacity, and better logging.");
-MODULE_VERSION("3.0");
-
+MODULE_VERSION(CLIPBOARD_MODULE_VERSION); // Use the new macro
