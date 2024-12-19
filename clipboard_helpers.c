@@ -100,12 +100,26 @@ int clipboard_release(struct inode *inode, struct file *file)
 {
     uid_t uid;
     struct clipboard_fasync_entry *entry = NULL;
+    struct clipboard_file_data *file_data;
     int hash;
     int ret = 0;
 
     /* Check if the file was opened with write access */
     if (!(file->f_mode & FMODE_WRITE)) {
         /* If opened read-only, do not call kill_fasync */
+        if (file->private_data) {
+            kfree(file->private_data);
+            file->private_data = NULL;
+        }
+        return ret;
+    }
+
+    file_data = file->private_data;
+
+    if (file_data && !file_data->bytes_written) {
+        kfree(file->private_data);
+        file->private_data = NULL;
+
         return ret;
     }
 
@@ -128,6 +142,12 @@ int clipboard_release(struct inode *inode, struct file *file)
 
     /* Unlock the mutex after operation */
     mutex_unlock(&clipboard_fasync_locks[hash]);
+
+    /* Free the per-file data */
+    if (file->private_data) {
+        kfree(file->private_data);
+        file->private_data = NULL;
+    }
 
     return ret;
 }
@@ -212,6 +232,7 @@ int clipboard_open(struct inode *inode, struct file *file)
 {
 	uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
+    struct clipboard_file_data *file_data;
     struct mutex *lock;
 
     lock = get_hash_lock(uid);
@@ -234,6 +255,14 @@ int clipboard_open(struct inode *inode, struct file *file)
     }
 
     mutex_unlock(lock);
+
+    file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
+    if (!file_data)
+        return -ENOMEM;
+
+    file_data->bytes_written = false;
+    file->private_data = file_data;
+
     return 0;
 }
 
@@ -281,6 +310,7 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
     ssize_t ret = 0;
     uid_t uid;
     struct user_clipboard *ucb;
+    struct clipboard_file_data *file_data;
     struct mutex *lock;
 
     if (!user_buf)
@@ -323,6 +353,10 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
     *ppos += count;
     if (*ppos > ucb->size)
         ucb->size = *ppos;
+
+    file_data = file->private_data;
+    if (file_data)
+        file_data->bytes_written = true;
 
     ret = count;
 
@@ -412,6 +446,7 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
     struct mutex *lock;
+    struct clipboard_file_data *file_data;
     size_t to_copy;
     ssize_t ret = 0;
 
@@ -468,6 +503,9 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     if (*ppos > ucb->size)
         ucb->size = *ppos;
 
+    file_data = file->private_data;
+    if (file_data)
+        file_data->bytes_written = true;
     ret = to_copy;
 
 out:

@@ -25,6 +25,10 @@ struct user_clipboard {
     struct hlist_node hash_node;
 };
 
+struct clipboard_file_data {
+    bool bytes_written;
+};
+
 /* Structure for managing per-user fasync subscriptions */
 struct clipboard_fasync_entry {
     uid_t uid;
