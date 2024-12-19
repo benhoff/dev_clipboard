@@ -58,6 +58,7 @@ int clipboard_fasync_handler(int fd, struct file *file, int on)
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
             ret = fasync_helper(-1, file, on, &entry->fasync);
+			break;
         }
     }
 
@@ -469,54 +470,6 @@ long clipboard_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         memset(ucb->buffer, 0, ucb->capacity);
         ucb->size = 0;
         pr_info("Cleared clipboard for UID %u\n", uid);
-        break;
-
-    case CLIPBOARD_SUBSCRIBE:
-        /* Allocate a new fasync entry */
-        entry = kzalloc(sizeof(*entry), GFP_KERNEL);
-        if (!entry) {
-            pr_err("Failed to allocate fasync entry.\n");
-            ret = -ENOMEM;
-            goto out;
-        }
-        entry->uid = uid;
-        entry->fasync = NULL;
-
-        /* Add to fasync hash table */
-        hash = hash_min(uid, CLIPBOARD_HASH_BITS);
-        mutex_lock(&clipboard_fasync_locks[hash]);
-        hash_add(clipboard_fasync_hash, &entry->hash_node, uid);
-        mutex_unlock(&clipboard_fasync_locks[hash]);
-
-        /* Register the fasync_struct */
-        result = fasync_helper(-1, file, 1, &entry->fasync);
-        if (result < 0) {
-            pr_err("Failed to subscribe to clipboard updates.\n");
-            hash_del(&entry->hash_node);
-            kfree(entry);
-            ret = result;
-            goto out;
-        }
-
-        pr_info("Subscribed to clipboard updates for UID %u\n", uid);
-        break;
-
-    case CLIPBOARD_UNSUBSCRIBE:
-        /* Find the fasync entry for this user */
-        hash = hash_min(uid, CLIPBOARD_HASH_BITS);
-        hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
-            if (entry->uid == uid) {
-                /* Unregister the fasync_struct */
-                fasync_helper(-1, file, 0, &entry->fasync);
-
-                /* Remove from hash table and free */
-                hash_del(&entry->hash_node);
-                kfree(entry);
-
-                pr_info("Unsubscribed from clipboard updates for UID %u\n", uid);
-                break;
-            }
-        }
         break;
 
     default:
