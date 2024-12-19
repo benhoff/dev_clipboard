@@ -61,6 +61,12 @@ int clipboard_fasync_handler(int fd, struct file *file, int on)
         if (entry->uid == uid) {
             /* Register or deregister the fasync_struct */
             ret = fasync_helper(fd, file, on, &entry->fasync);
+            
+            /* If deregistering and no more fasync structs, clean up */
+            if (!on && !entry->fasync) {
+                hash_del(&entry->hash_node);
+                kfree(entry);
+            }
             break; /* UID is unique, no need to continue */
         }
     }
@@ -78,13 +84,17 @@ int clipboard_fasync_handler(int fd, struct file *file, int on)
 
         hash_add(clipboard_fasync_hash, &entry->hash_node, uid);
         ret = fasync_helper(fd, file, on, &entry->fasync);
+        if (ret < 0) {
+            /* Cleanup if fasync_helper fails */
+            hash_del(&entry->hash_node);
+            kfree(entry);
+        }
     }
 
 out:
     mutex_unlock(&clipboard_fasync_locks[hash]);
     return ret;
 }
-
 
 int clipboard_release(struct inode *inode, struct file *file)
 {
@@ -102,29 +112,11 @@ int clipboard_release(struct inode *inode, struct file *file)
     /* Lock the corresponding mutex to protect the hash table */
     mutex_lock(&clipboard_fasync_locks[hash]);
 
-    /* Find the fasync entry for this UID */
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
-            /* Deregister the fasync_struct associated with this file */
-            ret = fasync_helper(-1, file, 0, &entry->fasync);
-            if (ret < 0) {
-                pr_err("Failed to deregister fasync for UID %u: %d\n", uid, ret);
-                /* Continue to attempt cleanup even if deregistration fails */
-            }
-
-            /* If there are no more subscribers, remove and free the entry */
-            if (entry->fasync == NULL) {
-                /* Notify remaining subscribers (if any) with POLL_HUP */
-                kill_fasync(&entry->fasync, POLL_HUP, POLL_HUP);
-
-                /* Remove the entry from the hash table */
-                hash_del(&entry->hash_node);
-
-                /* Free the memory allocated for the entry */
-                kfree(entry);
-            }
-
-            break; /* UID is unique, no need to continue */
+            if (entry->fasync)
+                kill_fasync(&entry->fasync, SIGIO, POLL_IN);
+            break;
         }
     }
 
