@@ -103,6 +103,12 @@ int clipboard_release(struct inode *inode, struct file *file)
     int hash;
     int ret = 0;
 
+    /* Check if the file was opened with write access */
+    if (!(file->f_mode & FMODE_WRITE)) {
+        /* If opened read-only, do not call kill_fasync */
+        return ret;
+    }
+
     /* Retrieve the UID of the current process */
     uid = from_kuid(current_user_ns(), current_fsuid());
 
