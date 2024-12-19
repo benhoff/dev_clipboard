@@ -52,32 +52,88 @@ int clipboard_fasync_handler(int fd, struct file *file, int on)
     int hash;
     int ret = 0;
 
-    /* Find the fasync entry for this user */
+    /* Compute the hash based on UID */
     hash = hash_min(uid, CLIPBOARD_HASH_BITS);
     mutex_lock(&clipboard_fasync_locks[hash]);
+
+    /* Find the fasync entry for this UID */
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
-            ret = fasync_helper(-1, file, on, &entry->fasync);
-			break;
+            /* Register or deregister the fasync_struct */
+            ret = fasync_helper(fd, file, on, &entry->fasync);
+            break; /* UID is unique, no need to continue */
         }
     }
 
     /* If subscribing and no entry exists, create one */
     if (on && entry == NULL) {
         entry = kzalloc(sizeof(*entry), GFP_KERNEL);
-        if (!entry)
-            return -ENOMEM;
+        if (!entry) {
+            ret = -ENOMEM;
+            goto out;
+        }
 
         entry->uid = uid;
         entry->fasync = NULL;
 
         hash_add(clipboard_fasync_hash, &entry->hash_node, uid);
-        ret = fasync_helper(-1, file, on, &entry->fasync);
+        ret = fasync_helper(fd, file, on, &entry->fasync);
     }
 
-	mutex_unlock(&clipboard_fasync_locks[hash]);
+out:
+    mutex_unlock(&clipboard_fasync_locks[hash]);
     return ret;
 }
+
+
+int clipboard_release(struct inode *inode, struct file *file)
+{
+    uid_t uid;
+    struct clipboard_fasync_entry *entry = NULL;
+    int hash;
+    int ret = 0;
+
+    /* Retrieve the UID of the current process */
+    uid = from_kuid(current_user_ns(), current_fsuid());
+
+    /* Compute the hash based on UID */
+    hash = hash_min(uid, CLIPBOARD_HASH_BITS);
+
+    /* Lock the corresponding mutex to protect the hash table */
+    mutex_lock(&clipboard_fasync_locks[hash]);
+
+    /* Find the fasync entry for this UID */
+    hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
+        if (entry->uid == uid) {
+            /* Deregister the fasync_struct associated with this file */
+            ret = fasync_helper(-1, file, 0, &entry->fasync);
+            if (ret < 0) {
+                pr_err("Failed to deregister fasync for UID %u: %d\n", uid, ret);
+                /* Continue to attempt cleanup even if deregistration fails */
+            }
+
+            /* If there are no more subscribers, remove and free the entry */
+            if (entry->fasync == NULL) {
+                /* Notify remaining subscribers (if any) with POLL_HUP */
+                kill_fasync(&entry->fasync, POLL_HUP, POLL_HUP);
+
+                /* Remove the entry from the hash table */
+                hash_del(&entry->hash_node);
+
+                /* Free the memory allocated for the entry */
+                kfree(entry);
+            }
+
+            break; /* UID is unique, no need to continue */
+        }
+    }
+
+    /* Unlock the mutex after operation */
+    mutex_unlock(&clipboard_fasync_locks[hash]);
+
+    return ret;
+}
+
 
 static struct user_clipboard *get_or_create_user_clipboard(uid_t uid)
 {
@@ -228,7 +284,6 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
     uid_t uid;
     struct user_clipboard *ucb;
     struct mutex *lock;
-    struct clipboard_fasync_entry *entry;
 
     if (!user_buf)
         return -EINVAL;
@@ -272,15 +327,6 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
         ucb->size = *ppos;
 
     ret = count;
-
-    /* Notify any asynchronous subscribers about the data change */
-    hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
-        if (entry->uid == uid) {
-            if (entry->fasync)
-                kill_fasync(&entry->fasync, SIGIO, POLL_IN);
-            break;
-        }
-    }
 
 out:
     mutex_unlock(lock);
@@ -370,7 +416,6 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     struct mutex *lock;
     size_t to_copy;
     ssize_t ret = 0;
-    struct clipboard_fasync_entry *entry;
 
     /* Acquire the appropriate hash lock based on UID */
     lock = get_hash_lock(uid);
@@ -427,15 +472,6 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
     ret = to_copy;
 
-    /* Notify any asynchronous subscribers about the data change */
-    hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
-        if (entry->uid == uid) {
-            if (entry->fasync)
-                kill_fasync(&entry->fasync, SIGIO, POLL_IN);
-            break;
-        }
-    }
-
 out:
     /* Release the mutex lock */
     mutex_unlock(lock);
@@ -449,9 +485,6 @@ long clipboard_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     uid_t uid;
     struct user_clipboard *ucb;
     struct mutex *lock;
-    struct clipboard_fasync_entry *entry;
-    int hash;
-    int result;
 
     uid = from_kuid(current_user_ns(), current_fsuid());
     lock = get_hash_lock(uid);

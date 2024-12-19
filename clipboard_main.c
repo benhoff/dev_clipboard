@@ -25,6 +25,7 @@ static const struct file_operations clipboard_fops = {
     .unlocked_ioctl = clipboard_ioctl,
     .fasync = clipboard_fasync_handler,
     .llseek = clipboard_llseek,
+	.release = clipboard_release,
 };
 
 static struct miscdevice clipboard_dev = {

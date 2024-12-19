@@ -15,8 +15,6 @@ extern unsigned long max_clipboard_capacity;
 /* IOCTL commands */
 #define CLIPBOARD_MAGIC 'C'
 #define CLIPBOARD_CLEAR _IO(CLIPBOARD_MAGIC, 1)
-#define CLIPBOARD_SUBSCRIBE _IO(CLIPBOARD_MAGIC, 2)
-#define CLIPBOARD_UNSUBSCRIBE _IO(CLIPBOARD_MAGIC, 3)
 
 struct user_clipboard {
     uid_t uid;
@@ -52,6 +50,7 @@ void free_clipboard_fasync_entries(void);
 int clipboard_fasync_handler(int fd, struct file *file, int on);
 int clipboard_open(struct inode *inode, struct file *file);
 loff_t clipboard_llseek(struct file *file, loff_t offset, int whence);
+int clipboard_release(struct inode *inode, struct file *file);
 
 #endif // CLIPBOARD_H
 
