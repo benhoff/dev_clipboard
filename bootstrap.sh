@@ -84,23 +84,29 @@ version_greater_equal() {
 
 # Check if the module is installed and determine if an update is needed
 check_and_update_module() {
-    EXISTING_VERSION=$(dkms status | grep "^${MODULE_NAME}" | awk -F'/' '{print $2}' | awk -F':' '{print $1}')
+    # Get all installed versions of the module
+    INSTALLED_VERSIONS=$(dkms status | grep "^${MODULE_NAME}/" | awk -F'/' '{print $2}' | awk -F',' '{print $1}' | tr '\n' ' ')
 
-    if [ -z "$EXISTING_VERSION" ]; then
+    if [ -z "$INSTALLED_VERSIONS" ]; then
         echo "Module '${MODULE_NAME}' is not installed. Proceeding with installation."
         return 0
     else
-        echo "Module '${MODULE_NAME}' is already installed with version ${EXISTING_VERSION}."
-        if version_greater_equal "$EXISTING_VERSION" "$MODULE_VERSION"; then
-            echo "A newer or equal version is already installed. No update needed."
-            exit 0
-        else
-            echo "Installed version is older than desired version. Proceeding with update."
-            # Remove the existing module version
-            sudo dkms remove -m "$MODULE_NAME" -v "$EXISTING_VERSION" --all || {
-                error "Failed to remove existing module version: ${MODULE_NAME}/${EXISTING_VERSION}"
+        echo "Module '${MODULE_NAME}' is already installed with version(s): ${INSTALLED_VERSIONS}."
+        # Check if any installed version is greater than or equal to desired
+        for ver in $INSTALLED_VERSIONS; do
+            if version_greater_equal "$ver" "$MODULE_VERSION"; then
+                echo "A newer or equal version (${ver}) is already installed. No update needed."
+                exit 0
+            fi
+        done
+        echo "Installed version(s) are older than desired version. Proceeding with update."
+        # Remove all existing versions
+        for ver in $INSTALLED_VERSIONS; do
+            echo "Removing existing module version: ${MODULE_NAME}/${ver}"
+            sudo dkms remove -m "$MODULE_NAME" -v "$ver" --all || {
+                error "Failed to remove existing module version: ${MODULE_NAME}/${ver}"
             }
-        fi
+        done
     fi
 }
 
