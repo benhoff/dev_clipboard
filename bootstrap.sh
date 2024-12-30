@@ -5,7 +5,7 @@ set -e
 
 # Function to print error messages
 error() {
-    echo "Error: $1"
+    echo "Error: $1" >&2
     exit 1
 }
 
@@ -62,14 +62,17 @@ download_project() {
     echo "Downloading the project from GitHub..."
 
     if command_exists git; then
-        git clone "$GITHUB_REPO" "$TEMP_DIR/$MODULE_NAME-$MODULE_VERSION"
+        git clone --branch "v${MODULE_VERSION}" "$GITHUB_REPO" "$TEMP_DIR/${MODULE_NAME}-${MODULE_VERSION}" || {
+            echo "Tag v${MODULE_VERSION} not found. Cloning default branch."
+            git clone "$GITHUB_REPO" "$TEMP_DIR/${MODULE_NAME}-${MODULE_VERSION}"
+        }
     else
         echo "git not found. Attempting to download via curl..."
         # Assuming the repo provides a tarball; adjust the URL as needed
-        curl -L "$GITHUB_REPO/archive/refs/tags/v$MODULE_VERSION.tar.gz" | tar -xz -C "$TEMP_DIR" --strip-components=1
+        curl -L "$GITHUB_REPO/archive/refs/tags/v${MODULE_VERSION}.tar.gz" | tar -xz -C "$TEMP_DIR" --strip-components=1
     fi
 
-    echo "Project downloaded to $TEMP_DIR/$MODULE_NAME-$MODULE_VERSION"
+    echo "Project downloaded to $TEMP_DIR/${MODULE_NAME}-${MODULE_VERSION}"
 }
 
 # Compare two version strings
@@ -81,8 +84,8 @@ version_greater_equal() {
 
 # Check if the module is installed and determine if an update is needed
 check_and_update_module() {
-    EXISTING_VERSION=$(dkms status | grep "^clipboard" | cut -d'/' -f2 | cut -d',' -f1)
-    
+    EXISTING_VERSION=$(dkms status | grep "^${MODULE_NAME}" | awk -F'/' '{print $2}' | awk -F':' '{print $1}')
+
     if [ -z "$EXISTING_VERSION" ]; then
         echo "Module '${MODULE_NAME}' is not installed. Proceeding with installation."
         return 0
@@ -94,7 +97,9 @@ check_and_update_module() {
         else
             echo "Installed version is older than desired version. Proceeding with update."
             # Remove the existing module version
-            sudo dkms remove -m "$MODULE_NAME" -v "$EXISTING_VERSION" --all
+            sudo dkms remove -m "$MODULE_NAME" -v "$EXISTING_VERSION" --all || {
+                error "Failed to remove existing module version: ${MODULE_NAME}/${EXISTING_VERSION}"
+            }
         fi
     fi
 }
@@ -104,16 +109,29 @@ setup_dkms() {
     DEST_DIR="/usr/src/${MODULE_NAME}-${MODULE_VERSION}"
 
     echo "Copying project to $DEST_DIR..."
-    sudo cp -r "$TEMP_DIR/$MODULE_NAME-$MODULE_VERSION" "$DEST_DIR"
+    sudo cp -r "$TEMP_DIR/${MODULE_NAME}-${MODULE_VERSION}" "$DEST_DIR" || {
+        error "Failed to copy project to $DEST_DIR"
+    }
+
+    # Verify dkms.conf exists
+    if [ ! -f "$DEST_DIR/dkms.conf" ]; then
+        error "dkms.conf not found in $DEST_DIR. Ensure the project is DKMS-compatible."
+    fi
 
     echo "Adding the module to DKMS..."
-    sudo dkms add -m "$MODULE_NAME" -v "$MODULE_VERSION"
+    sudo dkms add -m "$MODULE_NAME" -v "$MODULE_VERSION" || {
+        error "Failed to add module to DKMS."
+    }
 
     echo "Building the module..."
-    sudo dkms build -m "$MODULE_NAME" -v "$MODULE_VERSION"
+    sudo dkms build -m "$MODULE_NAME" -v "$MODULE_VERSION" || {
+        error "Failed to build the DKMS module."
+    }
 
     echo "Installing the module..."
-    sudo dkms install -m "$MODULE_NAME" -v "$MODULE_VERSION"
+    sudo dkms install -m "$MODULE_NAME" -v "$MODULE_VERSION" || {
+        error "Failed to install the DKMS module."
+    }
 }
 
 # Configure the module to load on startup
@@ -127,7 +145,9 @@ configure_startup() {
     # Enable the module immediately if it's not already loaded
     if ! lsmod | grep -q "^${MODULE_NAME}"; then
         echo "Loading the module..."
-        sudo modprobe "$MODULE_NAME"
+        sudo modprobe "$MODULE_NAME" || {
+            error "Failed to load the module ${MODULE_NAME}."
+        }
     fi
 
     echo "Module configuration complete."
