@@ -25,7 +25,8 @@ static const struct file_operations clipboard_fops = {
     .unlocked_ioctl = clipboard_ioctl,
     .fasync = clipboard_fasync_handler,
     .llseek = clipboard_llseek,
-	.release = clipboard_release,
+    .release = clipboard_release,
+    .poll = clipboard_poll,
 };
 
 static struct miscdevice clipboard_dev = {
@@ -62,7 +63,25 @@ static int __init clipboard_init(void)
 
 static void __exit clipboard_exit(void)
 {
+    struct user_clipboard *ucb;
+    struct hlist_node *tmp;
+    int bkt;
     pr_info("Unregistering clipboard device and freeing buffers...\n");
+
+    // Iterate over all user clipboards
+    for (bkt = 0; bkt < (1 << CLIPBOARD_HASH_BITS); bkt++) {
+        struct mutex *lock = &clipboard_hash_locks[bkt];
+
+        mutex_lock(lock);
+
+        hash_for_each_safe(clipboard_hash, bkt, tmp, ucb, hash_node) {
+            // Wake up all readers and writers waiting on the queues
+            wake_up_interruptible_all(&ucb->read_queue);
+            wake_up_interruptible_all(&ucb->write_queue);
+        }
+
+        mutex_unlock(lock);
+    }
     misc_deregister(&clipboard_dev);
     free_clipboard_buffers();
     free_clipboard_fasync_entries();

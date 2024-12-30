@@ -45,6 +45,44 @@ static struct user_clipboard *find_user_clipboard(uid_t uid)
     return NULL;
 }
 
+
+unsigned int clipboard_poll(struct file *file, poll_table *wait)
+{
+    unsigned int mask = 0;
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
+    struct user_clipboard *ucb;
+    struct mutex *lock;
+
+    // Acquire the hash lock for the current user
+    lock = get_hash_lock(uid);
+    if (mutex_lock_interruptible(lock))
+        return POLLERR;
+
+    // Find the user’s clipboard
+    ucb = find_user_clipboard(uid);
+    if (!ucb) {
+        // No clipboard exists for this user; nothing to read or write
+        mutex_unlock(lock);
+        return mask;
+    }
+
+    // Add the wait queues to the poll table
+    poll_wait(file, &ucb->read_queue, wait);
+    poll_wait(file, &ucb->write_queue, wait);
+
+    // Check if data is available to read
+    if (ucb->size > 0)
+        mask |= POLLIN | POLLRDNORM;  // Data available for reading
+
+    // Check if space is available to write
+    if (ucb->size < ucb->capacity)
+        mask |= POLLOUT | POLLWRNORM; // Space available for writing
+
+    mutex_unlock(lock);
+    return mask;
+}
+
+
 int clipboard_fasync_handler(int fd, struct file *file, int on)
 {
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
@@ -176,6 +214,8 @@ static struct user_clipboard *get_or_create_user_clipboard(uid_t uid)
     }
     memset(ucb->buffer, 0, ucb->capacity);
     ucb->size = 0;
+    init_waitqueue_head(&ucb->read_queue);
+    init_waitqueue_head(&ucb->write_queue);
 
     hash_add(clipboard_hash, &ucb->hash_node, uid);
     return ucb;
@@ -202,6 +242,22 @@ ssize_t clipboard_read(struct file *file, char __user *user_buf, size_t count, l
         /* No data for this user */
         ret = 0;
         goto out;
+    }
+
+    /* Wait until data is available or the operation is interrupted */
+    while (ucb->size == 0) {
+        mutex_unlock(lock);
+        ret = wait_event_interruptible(ucb->read_queue, ucb->size > 0);
+        if (ret)
+            return ret; // Interrupted by signal
+        // Re-acquire the lock after waking up
+        if (mutex_lock_interruptible(lock))
+            return -ERESTARTSYS;
+        ucb = find_user_clipboard(uid);
+        if (!ucb) {
+            ret = 0;
+            goto out;
+        }
     }
 
     /* If reading beyond current size, return 0 */
@@ -268,6 +324,7 @@ int clipboard_open(struct inode *inode, struct file *file)
 
 static int expand_clipboard_buffer(struct user_clipboard *ucb, size_t required_size)
 {
+    char *new_buf_v;
     unsigned long new_capacity = ucb->capacity;
 
     /* Determine the new capacity by doubling until it fits or reaches the max limit */
@@ -282,7 +339,7 @@ static int expand_clipboard_buffer(struct user_clipboard *ucb, size_t required_s
     }
 
     /* Allocate new buffer with the increased capacity */
-    char *new_buf_v = vmalloc(new_capacity);
+    new_buf_v = vmalloc(new_capacity);
     if (!new_buf_v) {
         pr_err("Failed to expand clipboard buffer to %zu bytes.\n", (size_t)new_capacity);
         return -ENOMEM;
@@ -334,6 +391,22 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
         *ppos = ucb->size;
     }
 
+    while (*ppos >= ucb->capacity) {
+        mutex_unlock(lock);
+        ret = wait_event_interruptible(ucb->write_queue, *ppos < ucb->capacity);
+        if (ret)
+            return ret; // Interrupted by signal
+        // Re-acquire the lock after waking up
+        if (mutex_lock_interruptible(lock))
+            return -ERESTARTSYS;
+        ucb = get_or_create_user_clipboard(uid);
+        if (!ucb) {
+            ret = -ENOMEM;
+            goto out;
+        }
+    }
+
+
     /* Check if we need to expand the buffer */
     if (*ppos + count > ucb->capacity) {
         size_t required_size = *ppos + count;
@@ -359,6 +432,9 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
         file_data->bytes_written = true;
 
     ret = count;
+
+    if (ucb->size > 0)
+	wake_up_interruptible(&ucb->read_queue);
 
 out:
     mutex_unlock(lock);
@@ -395,7 +471,7 @@ loff_t clipboard_llseek(struct file *file, loff_t offset, int whence)
 
 ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
-    // struct file *file = iocb->ki_filp;
+    struct file *file = iocb->ki_filp;
     loff_t *ppos = &iocb->ki_pos;
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
@@ -413,6 +489,29 @@ ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
         ret = 0;
         goto out;
     }
+
+    // Check if O_NONBLOCK is set
+    if (file->f_flags & O_NONBLOCK && ucb->size == 0) {
+        ret = -EAGAIN;
+        goto out;
+    }
+
+    // Wait until data is available or the operation is interrupted
+    while (ucb->size == 0) {
+        mutex_unlock(lock);
+        ret = wait_event_interruptible(ucb->read_queue, ucb->size > 0);
+        if (ret)
+            return ret; // Interrupted by signal
+        // Re-acquire the lock after waking up
+        if (mutex_lock_interruptible(lock))
+            return -ERESTARTSYS;
+        ucb = find_user_clipboard(uid);
+        if (!ucb) {
+            ret = 0;
+            goto out;
+        }
+    }
+
 
     if (*ppos >= ucb->size) {
         ret = 0;
@@ -433,6 +532,10 @@ ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
     *ppos += to_copy;
     ret = to_copy;
+
+    if (ucb->size < ucb->capacity)
+        wake_up_interruptible(&ucb->write_queue);
+
 
 out:
     mutex_unlock(lock);
@@ -465,6 +568,28 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     /* Handle O_APPEND: set ppos to the end if O_APPEND is set */
     if (file->f_flags & O_APPEND) {
         *ppos = ucb->size;
+    }
+
+    /* Check if O_NONBLOCK is set */
+    if (file->f_flags & O_NONBLOCK && *ppos >= ucb->capacity) {
+        ret = -EAGAIN;
+        goto out;
+    }
+
+    // Wait until space is available or the operation is interrupted
+    while (*ppos >= ucb->capacity) {
+        mutex_unlock(lock);
+        ret = wait_event_interruptible(ucb->write_queue, *ppos < ucb->capacity);
+        if (ret)
+            return ret; // Interrupted by signal
+        // Re-acquire the lock after waking up
+        if (mutex_lock_interruptible(lock))
+            return -ERESTARTSYS;
+        ucb = get_or_create_user_clipboard(uid);
+        if (!ucb) {
+            ret = -ENOMEM;
+            goto out;
+        }
     }
 
     /* Calculate the maximum possible bytes to copy without expanding */
@@ -508,6 +633,8 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
         file_data->bytes_written = true;
     ret = to_copy;
 
+    if (ucb->size > 0)
+        wake_up_interruptible(&ucb->read_queue);
 out:
     /* Release the mutex lock */
     mutex_unlock(lock);
