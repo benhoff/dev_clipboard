@@ -56,7 +56,7 @@ install_dependencies() {
 download_project() {
     GITHUB_REPO="https://github.com/benhoff/dev_clipboard.git" # Replace with the actual GitHub repository URL
     MODULE_NAME="clipboard"       # Replace with the actual module name
-    MODULE_VERSION="3.5"
+    MODULE_VERSION="3.6"
 
     TEMP_DIR=$(mktemp -d)
     echo "Downloading the project from GitHub..."
