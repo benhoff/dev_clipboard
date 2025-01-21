@@ -261,6 +261,7 @@ int clipboard_open(struct inode *inode, struct file *file)
         return -ENOMEM;
 
     file_data->bytes_written = false;
+    file_data->ucb = ucb;
     file->private_data = file_data;
 
     return 0;
@@ -368,10 +369,15 @@ out:
 loff_t clipboard_llseek(struct file *file, loff_t offset, int whence)
 {
     loff_t new_pos;
-    struct user_clipboard *uc = file->private_data;
-
-    if (!uc)
+    struct clipboard_file_data *file_data = file->private_data;
+    struct user_clipboard *uc;
+        if (!file_data)
         return -EFAULT;
+
+    ucb = file_data->ucb;
+    if (!ucb)
+        return -EFAULT;
+
 
     switch (whence) {
     case SEEK_SET: // Absolute offset

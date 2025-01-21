@@ -26,6 +26,7 @@ struct user_clipboard {
 };
 
 struct clipboard_file_data {
+    struct user_clipboard *ucb;
     bool bytes_written;
 };
 
