@@ -370,7 +370,7 @@ loff_t clipboard_llseek(struct file *file, loff_t offset, int whence)
 {
     loff_t new_pos;
     struct clipboard_file_data *file_data = file->private_data;
-    struct user_clipboard *uc;
+    struct user_clipboard *ucb;
         if (!file_data)
         return -EFAULT;
 
