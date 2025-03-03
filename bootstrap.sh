@@ -25,29 +25,65 @@ detect_distro() {
     echo "Detected Linux distribution: $DISTRO"
 }
 
-# Install DKMS and necessary build tools
 install_dependencies() {
+    local missing=0
+
     case "$DISTRO" in
         ubuntu|debian)
-            echo "Updating package lists..."
-            sudo apt update
-            echo "Installing DKMS and build-essential..."
-            sudo apt install -y dkms build-essential git curl
+            # List of required packages
+            local pkgs=(dkms build-essential git curl)
+            for pkg in "${pkgs[@]}"; do
+                if ! dpkg -s "$pkg" &>/dev/null; then
+                    echo "$pkg is not installed."
+                    missing=1
+                fi
+            done
+            if [ $missing -eq 0 ]; then
+                echo "All dependencies are already installed."
+                return 0
+            fi
+            echo "Installing missing dependencies..."
+            sudo apt install -y "${pkgs[@]}"
             ;;
         arch)
-            echo "Updating package lists..."
-            sudo pacman -Syu --noconfirm
-            echo "Installing DKMS and base-devel..."
-            sudo pacman -S --noconfirm dkms base-devel git curl
+            local pkgs=(dkms base-devel git curl)
+            for pkg in "${pkgs[@]}"; do
+                if ! pacman -Qi "$pkg" &>/dev/null; then
+                    echo "$pkg is not installed."
+                    missing=1
+                fi
+            done
+            if [ $missing -eq 0 ]; then
+                echo "All dependencies are already installed."
+                return 0
+            fi
+            echo "Installing missing dependencies..."
+            sudo pacman -S --noconfirm "${pkgs[@]}"
             ;;
         fedora)
-            echo "Updating package lists..."
-            sudo dnf check-update || true
-            echo "Installing DKMS and necessary tools..."
+            # For Fedora, check individual packages
+            local pkgs=(dkms git curl)
+            for pkg in "${pkgs[@]}"; do
+                if ! rpm -q "$pkg" &>/dev/null; then
+                    echo "$pkg is not installed."
+                    missing=1
+                fi
+            done
+            # Check for gcc as a proxy for development tools
+            if ! rpm -q gcc &>/dev/null; then
+                echo "gcc (development tools) is not installed."
+                missing=1
+            fi
+            if [ $missing -eq 0 ]; then
+                echo "All dependencies are already installed."
+                return 0
+            fi
+            echo "Installing missing dependencies..."
             sudo dnf install -y dkms @development-tools git curl
             ;;
         *)
-            error "Unsupported Linux distribution: $DISTRO"
+            echo "Unsupported Linux distribution: $DISTRO" >&2
+            return 1
             ;;
     esac
 }
