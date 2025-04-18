@@ -131,6 +131,7 @@ static struct user_clipboard *get_or_create_user_clipboard_locked(struct rw_sema
         ucb->buffer = vmalloc(ucb->capacity);
         if (!ucb->buffer) { kfree(ucb); ucb = NULL; goto out; }
         memset(ucb->buffer, 0, ucb->capacity);
+        init_waitqueue_head(&ucb->waitq);
         ucb->size = 0;
         hash_add(clipboard_hash, &ucb->hash_node, uid);
     }
@@ -280,7 +281,7 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
     struct clipboard_file_data *file_data = file->private_data;
     if (file_data)
 		file_data->bytes_written = true;
-
+    wake_up_interruptible(&ucb->waitq);
     ret = count;
 
 out:
@@ -319,6 +320,34 @@ loff_t clipboard_llseek(struct file *file, loff_t offset, int whence)
 
     file->f_pos = new_pos;
     return new_pos;
+}
+
+__poll_t clipboard_poll(struct file *file, poll_table *wait)
+{
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
+    struct user_clipboard *ucb;
+    struct rw_semaphore *sem = hash_sem(uid);
+    __poll_t mask = 0;
+
+    down_read(sem);
+    ucb = find_user_clipboard(uid);
+    if (!ucb) {
+        up_read(sem);
+        return POLLOUT | POLLERR;      /* always writable but invalid for read */
+    }
+
+    /* Arm the waitqueue */
+    poll_wait(file, &ucb->waitq, wait);
+
+    /* Data ready?  (anything beyond current f_pos) */
+    if (file->f_pos < ucb->size)
+        mask |= POLLIN | POLLRDNORM;
+
+    /* Device is never “full” → writable at any time */
+    mask |= POLLOUT | POLLWRNORM;
+
+    up_read(sem);
+    return mask;
 }
 
 ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
