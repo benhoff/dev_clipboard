@@ -2,7 +2,6 @@
 #include <linux/slab.h>
 #include <linux/cred.h>
 #include <linux/uidgid.h>
-#include <linux/mutex.h>
 #include <linux/hashtable.h>
 #include <linux/string.h>
 #include <linux/err.h>
@@ -17,27 +16,28 @@
 
 #include "clipboard.h"
 
+#define NBUCKETS (1U << CLIPBOARD_HASH_BITS)
+
+
 /* Initialize hash table and bucket locks */
 DEFINE_HASHTABLE(clipboard_hash, CLIPBOARD_HASH_BITS);
-struct mutex clipboard_hash_locks[1 << CLIPBOARD_HASH_BITS];
-
 DEFINE_HASHTABLE(clipboard_fasync_hash, CLIPBOARD_HASH_BITS);
-struct mutex clipboard_fasync_locks[1 << CLIPBOARD_HASH_BITS];
+
+/* sleep‑able reader‑writer semaphores */
+struct rw_semaphore clipboard_hash_sems[NBUCKETS];
+struct rw_semaphore clipboard_fasync_sems[NBUCKETS];
 
 /* Initial capacity for a new clipboard buffer */
 #define INITIAL_CLIPBOARD_CAPACITY 1024
 
-static struct mutex *get_hash_lock(uid_t uid)
-{
-    int hash = hash_min(uid, CLIPBOARD_HASH_BITS);
-    return &clipboard_hash_locks[hash];
-}
+static inline struct rw_semaphore *hash_sem(uid_t uid)
+{ return &clipboard_hash_sems[hash_min(uid, CLIPBOARD_HASH_BITS)]; }
+static inline struct rw_semaphore *fasync_sem(uid_t uid)
+{ return &clipboard_fasync_sems[hash_min(uid, CLIPBOARD_HASH_BITS)]; }
 
 static struct user_clipboard *find_user_clipboard(uid_t uid)
 {
     struct user_clipboard *ucb;
-
-    /* The caller must hold the hash bucket lock */
     hash_for_each_possible(clipboard_hash, ucb, hash_node, uid) {
         if (ucb->uid == uid)
             return ucb;
@@ -48,214 +48,150 @@ static struct user_clipboard *find_user_clipboard(uid_t uid)
 int clipboard_fasync_handler(int fd, struct file *file, int on)
 {
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
-    struct clipboard_fasync_entry *entry = NULL;
-    int hash;
+    struct clipboard_fasync_entry *entry;
+    struct rw_semaphore *sem = fasync_sem(uid);
+    // int hash = hash_min(uid, CLIPBOARD_HASH_BITS);
     int ret = 0;
 
-    /* Compute the hash based on UID */
-    hash = hash_min(uid, CLIPBOARD_HASH_BITS);
-    mutex_lock(&clipboard_fasync_locks[hash]);
-
-    /* Find the fasync entry for this UID */
+    down_write(sem);
+    /* find existing entry */
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
         if (entry->uid == uid) {
-            /* Register or deregister the fasync_struct */
             ret = fasync_helper(fd, file, on, &entry->fasync);
-            
-            /* If deregistering and no more fasync structs, clean up */
             if (!on && !entry->fasync) {
                 hash_del(&entry->hash_node);
                 kfree(entry);
             }
-            break; /* UID is unique, no need to continue */
+            up_write(sem);
+            return ret;
         }
     }
-
-    /* If subscribing and no entry exists, create one */
-    if (on && entry == NULL) {
+    /* create new if subscribing */
+    if (on) {
         entry = kzalloc(sizeof(*entry), GFP_KERNEL);
         if (!entry) {
             ret = -ENOMEM;
-            goto out;
+            up_write(sem);
+            return ret;
         }
-
         entry->uid = uid;
         entry->fasync = NULL;
-
         hash_add(clipboard_fasync_hash, &entry->hash_node, uid);
         ret = fasync_helper(fd, file, on, &entry->fasync);
         if (ret < 0) {
-            /* Cleanup if fasync_helper fails */
             hash_del(&entry->hash_node);
             kfree(entry);
         }
     }
-
-out:
-    mutex_unlock(&clipboard_fasync_locks[hash]);
+    up_write(sem);
     return ret;
 }
+
 
 int clipboard_release(struct inode *inode, struct file *file)
 {
+    struct clipboard_file_data *file_data = file->private_data;
     uid_t uid;
-    struct clipboard_fasync_entry *entry = NULL;
-    struct clipboard_file_data *file_data;
-    int hash;
-    int ret = 0;
+    struct clipboard_fasync_entry *entry;
+    struct rw_semaphore *sem;
 
-    /* Check if the file was opened with write access */
     if (!(file->f_mode & FMODE_WRITE)) {
-        /* If opened read-only, do not call kill_fasync */
-        if (file->private_data) {
-            kfree(file->private_data);
-            file->private_data = NULL;
-        }
-        return ret;
-    }
-
-    file_data = file->private_data;
-
-    if (file_data && !file_data->bytes_written) {
-        kfree(file->private_data);
+        kfree(file_data);
         file->private_data = NULL;
-
-        return ret;
+        return 0;
     }
-
-    /* Retrieve the UID of the current process */
+    if (!file_data->bytes_written) {
+        kfree(file_data);
+        file->private_data = NULL;
+        return 0;
+    }
     uid = from_kuid(current_user_ns(), current_fsuid());
-
-    /* Compute the hash based on UID */
-    hash = hash_min(uid, CLIPBOARD_HASH_BITS);
-
-    /* Lock the corresponding mutex to protect the hash table */
-    mutex_lock(&clipboard_fasync_locks[hash]);
-
+    sem = fasync_sem(uid);
+    down_write(sem);
     hash_for_each_possible(clipboard_fasync_hash, entry, hash_node, uid) {
-        if (entry->uid == uid) {
-            if (entry->fasync)
-                kill_fasync(&entry->fasync, SIGIO, POLL_IN);
-            break;
-        }
+        if (entry->uid == uid && entry->fasync)
+            kill_fasync(&entry->fasync, SIGIO, POLL_IN);
     }
-
-    /* Unlock the mutex after operation */
-    mutex_unlock(&clipboard_fasync_locks[hash]);
-
-    /* Free the per-file data */
-    if (file->private_data) {
-        kfree(file->private_data);
-        file->private_data = NULL;
-    }
-
-    return ret;
+    up_write(sem);
+    kfree(file_data);
+    file->private_data = NULL;
+    return 0;
 }
 
-
-static struct user_clipboard *get_or_create_user_clipboard(uid_t uid)
+static struct user_clipboard *get_or_create_user_clipboard_locked(struct rw_semaphore *sem, uid_t uid)
 {
     struct user_clipboard *ucb;
 
     ucb = find_user_clipboard(uid);
-    if (ucb)
-        return ucb;
-
-    ucb = kzalloc(sizeof(*ucb), GFP_KERNEL);
-    if (!ucb)
-        return NULL;
-
-    ucb->uid = uid;
-    ucb->capacity = INITIAL_CLIPBOARD_CAPACITY;
-
-    // Allocate buffer with vmalloc
-    ucb->buffer = vmalloc(ucb->capacity);
-    if (!ucb->buffer) {
-        kfree(ucb);
-        return NULL;
+    if (!ucb) {
+        ucb = kzalloc(sizeof(*ucb), GFP_KERNEL);
+        if (!ucb) goto out;
+        ucb->uid = uid;
+        ucb->capacity = INITIAL_CLIPBOARD_CAPACITY;
+        ucb->buffer = vmalloc(ucb->capacity);
+        if (!ucb->buffer) { kfree(ucb); ucb = NULL; goto out; }
+        memset(ucb->buffer, 0, ucb->capacity);
+        ucb->size = 0;
+        hash_add(clipboard_hash, &ucb->hash_node, uid);
     }
-    memset(ucb->buffer, 0, ucb->capacity);
-    ucb->size = 0;
-
-    hash_add(clipboard_hash, &ucb->hash_node, uid);
+out:
     return ucb;
 }
 
 ssize_t clipboard_read(struct file *file, char __user *user_buf, size_t count, loff_t *ppos)
 {
     ssize_t ret = 0;
-    uid_t uid;
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
-    struct mutex *lock;
+    struct rw_semaphore *sem = hash_sem(uid);
 
     if (!user_buf)
         return -EINVAL;
 
-    uid = from_kuid(current_user_ns(), current_fsuid());
-    lock = get_hash_lock(uid);
-
-    if (mutex_lock_interruptible(lock))
-        return -ERESTARTSYS;
-
+    down_read(sem);
     ucb = find_user_clipboard(uid);
-    if (!ucb) {
-        /* No data for this user */
-        ret = 0;
-        goto out;
+    if (!ucb || *ppos >= ucb->size) {
+        up_read(sem);
+        return 0;
     }
 
-    /* If reading beyond current size, return 0 */
-    if (*ppos >= ucb->size) {
-        ret = 0;
-        goto out;
-    }
-
-    /* Adjust count if it exceeds available data */
-    if (count > (ucb->size - *ppos))
+    if (count > ucb->size - *ppos)
         count = ucb->size - *ppos;
 
     if (copy_to_user(user_buf, ucb->buffer + *ppos, count)) {
-        pr_err("Failed to copy data to user.\n");
         ret = -EFAULT;
-        goto out;
+    } else {
+        *ppos += count;
+        ret = count;
     }
-
-    *ppos += count;
-    ret = count;
-
-out:
-    mutex_unlock(lock);
+    up_read(sem);
     return ret;
 }
 
 int clipboard_open(struct inode *inode, struct file *file)
 {
-	uid_t uid = from_kuid(current_user_ns(), current_fsuid());
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
     struct clipboard_file_data *file_data;
-    struct mutex *lock;
 
-    lock = get_hash_lock(uid);
-
-    if (mutex_lock_interruptible(lock))
-        return -ERESTARTSYS;
-
-    ucb = get_or_create_user_clipboard(uid);
+	struct rw_semaphore *sem = hash_sem(uid);
+	down_write(sem);
+    /* Find or allocate this UID’s clipboard buffer */
+    ucb = get_or_create_user_clipboard_locked(sem, uid);
     if (!ucb) {
-        mutex_unlock(lock);
+        up_write(sem);
         return -ENOMEM;
     }
 
-    /* Handle O_TRUNC: if the file is opened with O_TRUNC, clear the buffer */
+    /* If opened with O_TRUNC, clear out existing contents */
     if (file->f_flags & O_TRUNC) {
         memset(ucb->buffer, 0, ucb->capacity);
         ucb->size = 0;
-
-        // pr_info("Clipboard buffer truncated for UID %u\n", uid);
     }
 
-    mutex_unlock(lock);
+    up_write(sem);
 
+    /* Allocate our per-file state */
     file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
     if (!file_data)
         return -ENOMEM;
@@ -309,44 +245,31 @@ static int expand_clipboard_buffer(struct user_clipboard *ucb, size_t required_s
 ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t count, loff_t *ppos)
 {
     ssize_t ret = 0;
-    uid_t uid;
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
-    struct clipboard_file_data *file_data;
-    struct mutex *lock;
+    struct rw_semaphore *sem = hash_sem(uid);
 
-    if (!user_buf)
+    if (!user_buf) {
         return -EINVAL;
+	}
 
-    uid = from_kuid(current_user_ns(), current_fsuid());
-    lock = get_hash_lock(uid);
-
-    if (mutex_lock_interruptible(lock))
-        return -ERESTARTSYS;
-
-    ucb = get_or_create_user_clipboard(uid);
+	down_write(sem);
+    ucb = get_or_create_user_clipboard_locked(sem, uid);
     if (!ucb) {
-        pr_err("Failed to create or find user clipboard.\n");
         ret = -ENOMEM;
         goto out;
     }
 
-    /* Handle O_APPEND: set ppos to the end if O_APPEND is set */
-    if (file->f_flags & O_APPEND) {
+    if (file->f_flags & O_APPEND)
         *ppos = ucb->size;
-    }
 
-    /* Check if we need to expand the buffer */
     if (*ppos + count > ucb->capacity) {
-        size_t required_size = *ppos + count;
-
-        ret = expand_clipboard_buffer(ucb, required_size);
-        if (ret < 0)
+        ret = expand_clipboard_buffer(ucb, *ppos + count);
+        if (ret)
             goto out;
     }
 
-    /* Copy data from user space */
     if (copy_from_user(ucb->buffer + *ppos, user_buf, count)) {
-        pr_err("Failed to copy data from user.\n");
         ret = -EFAULT;
         goto out;
     }
@@ -354,15 +277,14 @@ ssize_t clipboard_write(struct file *file, const char __user *user_buf, size_t c
     *ppos += count;
     if (*ppos > ucb->size)
         ucb->size = *ppos;
-
-    file_data = file->private_data;
+    struct clipboard_file_data *file_data = file->private_data;
     if (file_data)
-        file_data->bytes_written = true;
+		file_data->bytes_written = true;
 
     ret = count;
 
 out:
-    mutex_unlock(lock);
+    up_write(sem);
     return ret;
 }
 
@@ -401,47 +323,25 @@ loff_t clipboard_llseek(struct file *file, loff_t offset, int whence)
 
 ssize_t clipboard_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
-    // struct file *file = iocb->ki_filp;
     loff_t *ppos = &iocb->ki_pos;
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
-    struct mutex *lock;
-    size_t available, to_copy;
+    size_t avail, to_copy;
     ssize_t ret = 0;
+    struct rw_semaphore *sem = hash_sem(uid);
 
-    lock = get_hash_lock(uid);
-    if (mutex_lock_interruptible(lock))
-        return -ERESTARTSYS;
-
+    down_read(sem);
     ucb = find_user_clipboard(uid);
-    if (!ucb) {
-        // No data for this user
-        ret = 0;
-        goto out;
+    if (!ucb || *ppos >= ucb->size) goto out;
+    avail = ucb->size - *ppos;
+    to_copy = min(avail, iov_iter_count(to));
+    if (to_copy && copy_to_iter(ucb->buffer + *ppos, to_copy, to) != to_copy) {
+        ret = -EFAULT; goto out;
     }
-
-    if (*ppos >= ucb->size) {
-        ret = 0;
-        goto out;
-    }
-
-    available = ucb->size - *ppos;
-    to_copy = min_t(size_t, available, iov_iter_count(to));
-    if (to_copy == 0) {
-        ret = 0;
-        goto out;
-    }
-
-    if (copy_to_iter(ucb->buffer + *ppos, to_copy, to) != to_copy) {
-        ret = -EFAULT;
-        goto out;
-    }
-
     *ppos += to_copy;
     ret = to_copy;
-
 out:
-    mutex_unlock(lock);
+    up_read(sem);
     return ret;
 }
 
@@ -451,109 +351,51 @@ ssize_t clipboard_write_iter(struct kiocb *iocb, struct iov_iter *from)
     loff_t *ppos = &iocb->ki_pos;
     uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
-    struct mutex *lock;
-    struct clipboard_file_data *file_data;
-    size_t to_copy;
+    size_t count = iov_iter_count(from), to_copy;
     ssize_t ret = 0;
+    struct rw_semaphore *sem = hash_sem(uid);
 
-    /* Acquire the appropriate hash lock based on UID */
-    lock = get_hash_lock(uid);
-    if (mutex_lock_interruptible(lock))
-        return -ERESTARTSYS;
-
-    /* Retrieve or create the user clipboard */
-    ucb = get_or_create_user_clipboard(uid);
-    if (!ucb) {
-        ret = -ENOMEM;
-        goto out;
+    down_write(sem);
+    ucb = get_or_create_user_clipboard_locked(sem, uid);
+    if (!ucb) { ret = -ENOMEM; goto out; }
+    if (file->f_flags & O_APPEND) *ppos = ucb->size;
+    to_copy = min(count, ucb->capacity - *ppos);
+    if (to_copy < count) {
+        ret = expand_clipboard_buffer(ucb, *ppos + count);
+        if (ret) goto out;
+        to_copy = min(count, ucb->capacity - *ppos);
+        if (!to_copy) { ret = -ENOSPC; goto out; }
     }
-
-    /* Handle O_APPEND: set ppos to the end if O_APPEND is set */
-    if (file->f_flags & O_APPEND) {
-        *ppos = ucb->size;
-    }
-
-    /* Calculate the maximum possible bytes to copy without expanding */
-    to_copy = min_t(size_t, iov_iter_count(from), ucb->capacity - *ppos);
-
-    /* If insufficient space, attempt to expand the buffer */
-    if (to_copy < iov_iter_count(from)) {
-        size_t required = *ppos + iov_iter_count(from);
-
-        ret = expand_clipboard_buffer(ucb, required);
-        if (ret < 0)
-            goto out;
-
-        /* Recalculate how much can be copied after expansion */
-        to_copy = min_t(size_t, iov_iter_count(from), ucb->capacity - *ppos);
-    }
-
-    /* If still no space after expansion, return ENOSPC */
-    if (to_copy == 0) {
-        pr_err("No space available in clipboard buffer after expansion.\n");
-        ret = -ENOSPC;
-        goto out;
-    }
-
-    /* Perform the copy from user space */
     if (copy_from_iter(ucb->buffer + *ppos, to_copy, from) != to_copy) {
-        pr_err("Failed to copy data from user space.\n");
-        ret = -EFAULT;
-        goto out;
-    }
-
-    /* Update the file position */
+        ret = -EFAULT; goto out; }
     *ppos += to_copy;
-
-    /* Update the clipboard size if necessary */
-    if (*ppos > ucb->size)
-        ucb->size = *ppos;
-
-    file_data = file->private_data;
+    if (*ppos > ucb->size) ucb->size = *ppos;
+    struct clipboard_file_data *file_data = file->private_data;
     if (file_data)
-        file_data->bytes_written = true;
+		file_data->bytes_written = true;
     ret = to_copy;
-
 out:
-    /* Release the mutex lock */
-    mutex_unlock(lock);
+    up_write(sem);
     return ret;
 }
 
 /* IOCTL handler to clear the clipboard */
 long clipboard_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
-    long ret = 0;
-    uid_t uid;
+    uid_t uid = from_kuid(current_user_ns(), current_fsuid());
     struct user_clipboard *ucb;
-    struct mutex *lock;
+    ssize_t ret = 0;
+    struct rw_semaphore *sem = hash_sem(uid);
 
-    uid = from_kuid(current_user_ns(), current_fsuid());
-    lock = get_hash_lock(uid);
-
-    if (mutex_lock_interruptible(lock))
-        return -ERESTARTSYS;
-
-    ucb = find_user_clipboard(uid);
-    if (!ucb) {
-        /* No clipboard yet, nothing to clear */
-        goto out;
+    down_write(sem);
+    ucb = get_or_create_user_clipboard_locked(sem, uid);
+    if (ucb) {
+        if (cmd == CLIPBOARD_CLEAR) {
+            memset(ucb->buffer, 0, ucb->capacity);
+            ucb->size = 0;
+        } else ret = -ENOTTY;
     }
-
-    switch (cmd) {
-    case CLIPBOARD_CLEAR:
-        memset(ucb->buffer, 0, ucb->capacity);
-        ucb->size = 0;
-        pr_info("Cleared clipboard for UID %u\n", uid);
-        break;
-
-    default:
-        ret = -ENOTTY;
-        break;
-    }
-
-out:
-    mutex_unlock(lock);
+    up_write(sem);
     return ret;
 }
 
@@ -564,26 +406,19 @@ void free_clipboard_fasync_entries(void)
     int bkt;
 
     for (bkt = 0; bkt < (1 << CLIPBOARD_HASH_BITS); bkt++) {
-        struct mutex *lock = &clipboard_fasync_locks[bkt];
-        mutex_lock(lock);
+        struct rw_semaphore *sem = &clipboard_fasync_sems[bkt];
+        down_write(sem);
 
         hash_for_each_safe(clipboard_fasync_hash, bkt, tmp, entry, hash_node) {
-            /* Notify the subscriber and remove the fasync_struct */
             if (entry->fasync) {
-                /* 
-                 * Kill the fasync_struct by sending POLL_HUP.
-                 * This effectively notifies the subscriber that the
-                 * module is being unloaded and cleans up the fasync_struct.
-                 */
+                /* Notify subscriber and clean up */
                 kill_fasync(&entry->fasync, POLL_HUP, POLL_HUP);
             }
-
-            /* Remove from hash table and free */
             hash_del(&entry->hash_node);
             kfree(entry);
         }
 
-        mutex_unlock(lock);
+        up_write(sem);
     }
 }
 
@@ -593,25 +428,16 @@ void free_clipboard_buffers(void)
     struct hlist_node *tmp;
     int bkt;
 
-    /* Iterate over all buckets */
     for (bkt = 0; bkt < (1 << CLIPBOARD_HASH_BITS); bkt++) {
-        struct mutex *lock = &clipboard_hash_locks[bkt];
+        struct rw_semaphore *sem = &clipboard_hash_sems[bkt];
+        down_write(sem);
 
-        /* Lock the bucket to ensure thread safety */
-        mutex_lock(lock);
-
-        /* Iterate safely over the hash table bucket */
         hash_for_each_safe(clipboard_hash, bkt, tmp, ucb, hash_node) {
-            /* Remove from hash table */
             hash_del(&ucb->hash_node);
-
-            /* Free resources */
-            vfree(ucb->buffer); // Use vfree instead of kfree
+            vfree(ucb->buffer);
             kfree(ucb);
         }
 
-        /* Unlock the bucket */
-        mutex_unlock(lock);
+        up_write(sem);
     }
 }
-

@@ -3,9 +3,15 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/hashtable.h>
-#include <linux/mutex.h>
 #include <linux/errno.h>
+#include <linux/rwsem.h>
 #include "clipboard.h"
+
+#define NBUCKETS (1U << CLIPBOARD_HASH_BITS)
+
+/* Declare the per-bucket rwlock arrays (must match the ones in clipboard.c) */
+extern struct rw_semaphore clipboard_hash_sems[NBUCKETS];
+extern struct rw_semaphore clipboard_fasync_sems[NBUCKETS];
 
 /* Define the max clipboard capacity with a default value */
 unsigned long max_clipboard_capacity = 10 * 1024 * 1024; // 10 MB
@@ -42,12 +48,10 @@ static int __init clipboard_init(void)
 
     pr_info("Initializing clipboard module with improvements...\n");
 
-    /* Initialize per-bucket mutexes */
-    for (i = 0; i < (1 << CLIPBOARD_HASH_BITS); i++)
-        mutex_init(&clipboard_hash_locks[i]);
-
-    for (i = 0; i < (1 << CLIPBOARD_HASH_BITS); i++)
-        mutex_init(&clipboard_fasync_locks[i]);
+    for (i = 0; i < NBUCKETS; i++) {
+        init_rwsem(&clipboard_hash_sems[i]);
+        init_rwsem(&clipboard_fasync_sems[i]);
+    }
 
     /* Register the misc device */
     ret = misc_register(&clipboard_dev);

@@ -39,10 +39,9 @@ struct clipboard_fasync_entry {
 
 /* Declare the hash table and mutex array */
 extern struct hlist_head clipboard_hash[];
-extern struct mutex clipboard_hash_locks[];
-
 extern struct hlist_head clipboard_fasync_hash[];
-extern struct mutex clipboard_fasync_locks[];
+extern struct rw_semaphore clipboard_hash_sems[];
+extern struct rw_semaphore clipboard_fasync_sems[];
 
 /* File operations */
 ssize_t clipboard_read(struct file *file, char __user *user_buf, size_t count, loff_t *ppos);
