@@ -430,43 +430,50 @@ long clipboard_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 void free_clipboard_fasync_entries(void)
 {
-    struct clipboard_fasync_entry *entry;
-    struct hlist_node *tmp;
-    int bkt;
+	int bucket;
 
-    for (bkt = 0; bkt < (1 << CLIPBOARD_HASH_BITS); bkt++) {
-        struct rw_semaphore *sem = &clipboard_fasync_sems[bkt];
-        down_write(sem);
+	for (bucket = 0; bucket < HASH_SIZE(clipboard_fasync_hash); ++bucket) {
+		struct rw_semaphore            *sem   = &clipboard_fasync_sems[bucket];
+		struct clipboard_fasync_entry  *entry;
+		struct hlist_node              *tmp;
 
-        hash_for_each_safe(clipboard_fasync_hash, bkt, tmp, entry, hash_node) {
-            if (entry->fasync) {
-                /* Notify subscriber and clean up */
-                kill_fasync(&entry->fasync, POLL_HUP, POLL_HUP);
-            }
-            hash_del(&entry->hash_node);
-            kfree(entry);
-        }
+		down_write(sem);
 
-        up_write(sem);
-    }
+		hlist_for_each_entry_safe(entry, tmp,
+					  &clipboard_fasync_hash[bucket],
+					  hash_node) {
+			if (entry->fasync)
+				/* correct order:  SIGIO, band  */
+				kill_fasync(&entry->fasync, SIGIO, POLL_HUP);
+
+			hash_del(&entry->hash_node);
+			kfree(entry);
+		}
+
+		up_write(sem);
+	}
 }
 
 void free_clipboard_buffers(void)
 {
-    struct user_clipboard *ucb;
-    struct hlist_node *tmp;
-    int bkt;
+	int bucket;
 
-    for (bkt = 0; bkt < (1 << CLIPBOARD_HASH_BITS); bkt++) {
-        struct rw_semaphore *sem = &clipboard_hash_sems[bkt];
-        down_write(sem);
+	for (bucket = 0; bucket < HASH_SIZE(clipboard_hash); ++bucket) {
+		struct rw_semaphore *sem = &clipboard_hash_sems[bucket];
+		struct user_clipboard *ucb;
+		struct hlist_node *tmp;
 
-        hash_for_each_safe(clipboard_hash, bkt, tmp, ucb, hash_node) {
-            hash_del(&ucb->hash_node);
-            vfree(ucb->buffer);
-            kfree(ucb);
-        }
+		down_write(sem);
 
-        up_write(sem);
-    }
+		hlist_for_each_entry_safe(ucb, tmp,
+					  &clipboard_hash[bucket],
+					  hash_node) {
+			hash_del(&ucb->hash_node);
+			vfree(ucb->buffer);
+			kfree(ucb);
+		}
+
+		up_write(sem);
+	}
 }
+
